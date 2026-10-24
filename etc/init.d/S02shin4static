@@ -1,0 +1,26 @@
+#!/bin/sh
+# Shin4Static: ip rules and its own BIRD instance at boot, then the first
+# route update in background. Independent of S70bird and the system bird.
+
+PATH=/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin
+
+case "$1" in
+	start)
+		shin4static rules start
+		shin4static daemon start
+		(sleep 30; shin4static update -q) >/dev/null 2>&1 &
+		;;
+	stop|kill)
+		shin4static daemon stop
+		shin4static rules stop
+		;;
+	restart)
+		shin4static daemon stop
+		shin4static rules stop
+		shin4static rules start
+		shin4static daemon start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		;;
+esac

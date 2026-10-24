@@ -1,0 +1,162 @@
+#!/bin/sh
+# Shin4Static: user-list routing through VPN with per-entry kill switch.
+
+_self=$(readlink -f "$0")
+_base=$(dirname "$(dirname "$_self")")
+S4S_LIB=${S4S_LIB:-$_base/lib}
+
+. "$S4S_LIB/common.sh"
+. "$S4S_LIB/resolve.sh"
+. "$S4S_LIB/generate.sh"
+. "$S4S_LIB/apply.sh"
+
+usage() {
+	cat <<'EOF'
+Использование: shin4static <команда> [-q] [-v]
+
+  update        обновить маршруты (запускается из cron раз в час)
+  check         проверить списки и показать результат, ничего не меняя
+  status        состояние интерфейсов, правил и таблиц
+  why <IP>      какой записью и по какой цепочке идёт адрес
+  rules start|stop
+                добавить или убрать правила ip rule
+  daemon start|stop
+                запустить или остановить свой экземпляр BIRD
+  flush         удалить маршруты Shin4Static из таблиц ядра
+
+  -q  только ошибки и предупреждения
+  -v  подробно
+EOF
+}
+
+rule_pairs() {
+	echo "$PRIO_STEP1 $TABLE_STEP1"
+	echo "$PRIO_STEP2 $TABLE_STEP2"
+	echo "$PRIO_KS $TABLE_KS"
+}
+
+rules_start() {
+	rule_pairs | while read -r _prio _table; do
+		_have=$("$IP" rule show | awk -v p="$_prio:" '$1 == p')
+		if [ -z "$_have" ]; then
+			"$IP" rule add table "$_table" priority "$_prio"
+		elif ! printf '%s\n' "$_have" | grep -qw "lookup $_table"; then
+			warn "приоритет $_prio уже занят другим правилом: $_have"
+		fi
+	done
+}
+
+rules_stop() {
+	rule_pairs | while read -r _prio _table; do
+		while "$IP" rule del table "$_table" priority "$_prio" 2>/dev/null; do :; done
+	done
+}
+
+# Routes are kept in the kernel when BIRD stops (persist); remove them.
+routes_flush() {
+	rule_pairs | while read -r _prio _table; do
+		"$IP" route flush table "$_table" 2>/dev/null
+	done
+}
+
+cmd_update() {
+	WORK=$(mktemp -d /tmp/shin4static.XXXXXX) || die "не удалось создать временный каталог"
+	lock_acquire
+	[ "$DRY_RUN" = 1 ] || : > "$S4S_LOG"
+	generate "$WORK/gen"
+
+	if [ "$DRY_RUN" = 1 ]; then
+		for _g in "$WORK"/grp/*; do
+			case "$_g" in *.raw) continue ;; esac
+			[ -e "$_g" ] || continue
+			_key=$(basename "$_g")
+			printf '%s: %s сетей из %s записей\n' "$(describe_group "$_key")" \
+				"$(grep -c . "$_g")" "$(cat "$WORK/in/$_key.n" 2>/dev/null || echo 0)"
+		done
+	else
+		apply_generated "$WORK/gen"
+	fi
+
+	[ "$ERRORS$WARNINGS" = 00 ] || info "ошибок: $ERRORS, предупреждений: $WARNINGS"
+	[ "$ERRORS" = 0 ]
+}
+
+cmd_status() {
+	echo "Интерфейсы:"
+	for _x in isp 1 2; do
+		_if=$(exit_iface "$_x")
+		[ -n "$_if" ] || continue
+		_st=$("$IP" -o link show dev "$_if" 2>/dev/null | sed -n 's/.*<\([^>]*\)>.*/\1/p')
+		printf '  %s: %s\n' "$(exit_name "$_x")" "${_st:-нет такого интерфейса}"
+	done
+	echo "Правила и таблицы:"
+	rule_pairs | while read -r _prio _table; do
+		_rule=$("$IP" rule show | awk -v p="$_prio:" '$1 == p')
+		_cnt=$("$IP" route show table "$_table" 2>/dev/null | grep -c .)
+		printf '  %s → таблица %s: %s, маршрутов: %s\n' "$_prio" "$_table" \
+			"$([ -n "$_rule" ] && echo 'правило есть' || echo 'ПРАВИЛА НЕТ')" "$_cnt"
+	done
+	if bird_running; then
+		echo "BIRD Shin4Static (pid $(cat "$S4S_PIDFILE" 2>/dev/null)):"
+		s4s_birdc show protocols 2>/dev/null | grep 's4s_' | sed 's/^/  /'
+	else
+		echo "BIRD Shin4Static: НЕ ЗАПУЩЕН (маршруты в ядре сохранены, но не обновляются)"
+	fi
+	if [ -s "$S4S_LOG" ]; then
+		echo "Последний запуск:"
+		sed 's/^/  /' "$S4S_LOG" | tail -15
+	fi
+}
+
+cmd_why() {
+	_ip=$1
+	case "$_ip" in
+		*[!0-9.]*|'') die "укажите IPv4-адрес" ;;
+	esac
+	_found=0
+	for _g in "$S4S_STATE"/groups/*; do
+		[ -s "$_g" ] || continue
+		if [ -n "$(printf '%s\n' "$_ip" | "$IPRANGE" --common - "$_g" 2>/dev/null)" ]; then
+			echo "входит в: $(describe_group "$(basename "$_g")")"
+			_found=1
+		fi
+	done
+	[ "$_found" = 1 ] || echo "не входит ни в один список: идёт через провайдера"
+	echo "сейчас ядро выбирает:"
+	"$IP" route get "$_ip" 2>&1 | sed 's/^/  /'
+}
+
+DRY_RUN=0
+_cmd=$1
+[ $# -gt 0 ] && shift
+_arg=
+for _o in "$@"; do
+	case "$_o" in
+		-q) QUIET=1 ;;
+		-v) VERBOSE=1 ;;
+		*) _arg=$_o ;;
+	esac
+done
+
+case "$_cmd" in
+	update) load_config; cmd_update ;;
+	check) load_config; DRY_RUN=1; cmd_update ;;
+	status) load_config; cmd_status ;;
+	why) load_config; cmd_why "$_arg" ;;
+	rules)
+		load_config
+		case "$_arg" in
+			start) rules_start ;;
+			stop) rules_stop ;;
+			*) usage; exit 1 ;;
+		esac ;;
+	daemon)
+		load_config
+		case "$_arg" in
+			start) daemon_start ;;
+			stop) daemon_stop ;;
+			*) usage; exit 1 ;;
+		esac ;;
+	flush) load_config; routes_flush ;;
+	*) usage; exit 1 ;;
+esac

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shin4Static</title>
+<link rel="stylesheet" href="style.css">
+<script src="model.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header>
+	<h1>Shin4Static</h1>
+	<div class="actions">
+		<button id="save" title="Ctrl+S">Сохранить</button>
+		<button id="check">Проверить</button>
+		<button id="apply" class="primary">Применить</button>
+		<button id="status">Состояние</button>
+	</div>
+</header>
+
+<main>
+	<section class="editor">
+		<nav id="tabs" role="tablist"></nav>
+		<div class="toolbar">
+			<input id="filter" type="search" placeholder="Поиск по записям и комментариям" aria-label="Поиск">
+			<button id="addblock" type="button">+ Блок</button>
+			<div class="seg" role="group" aria-label="Вид">
+				<button id="viewlist" type="button" aria-pressed="true">Список</button>
+				<button id="viewtext" type="button" aria-pressed="false">Текст</button>
+			</div>
+		</div>
+
+		<div id="listview" class="listview"></div>
+
+		<div id="textview" class="code" hidden>
+			<pre id="gutter" aria-hidden="true"></pre>
+			<textarea id="text" spellcheck="false" autocomplete="off" aria-label="Содержимое списка"></textarea>
+		</div>
+
+		<div id="selbar" class="selbar" hidden>
+			<span id="selcount"></span>
+			<button id="selnew" type="button">В новый блок</button>
+			<select id="selmove" aria-label="Переместить в блок"></select>
+			<button id="selks" type="button">KS вкл</button>
+			<button id="selnoks" type="button">KS выкл</button>
+			<button id="seldel" type="button" class="danger">Удалить</button>
+			<button id="selclear" type="button">Снять</button>
+		</div>
+	</section>
+
+	<section class="side">
+		<form id="why">
+			<input id="whyip" inputmode="decimal" placeholder="IP-адрес" aria-label="IP-адрес">
+			<button>Куда идёт?</button>
+		</form>
+		<div class="outhead"><span id="outtitle">Журнал</span><span id="busy" hidden>выполняется…</span></div>
+		<pre id="out" aria-live="polite"></pre>
+		<details class="help">
+			<summary>Как это работает</summary>
+			<p>Запись — IPv4, подсеть <code>1.2.3.0/24</code>, диапазон <code>1.2.3.4 - 1.2.3.9</code>,
+			домен или <code>AS13335</code>. Можно вставить сразу много строк.</p>
+			<p><b>KS</b> (kill switch) — если выход списка недоступен, трафик не пойдёт через
+			провайдера. <b>Резерв</b> — VPN, который попробовать перед этим.</p>
+			<table>
+				<tr><td>KS выкл, резерва нет</td><td>через провайдера</td></tr>
+				<tr><td>KS вкл, резерва нет</td><td>блок</td></tr>
+				<tr><td>KS вкл, резерв VPN2</td><td>VPN2, затем блок</td></tr>
+				<tr><td>KS выкл, резерв VPN2</td><td>VPN2, затем провайдер</td></tr>
+			</table>
+			<p>Адрес VPN-сервера держите в <code>isp.list</code> без KS.</p>
+		</details>
+	</section>
+</main>
+</body>
+</html>

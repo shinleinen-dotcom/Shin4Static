@@ -1,0 +1,34 @@
+# Shin4Static settings. Plain sh: NAME=value, no spaces around "=".
+
+# Provider interface (ppp0, eth3, ...).
+ISP=ppp0
+# Provider gateway: empty - route straight to the interface (fine for PPPoE),
+# "auto" - take the gateway from the main routing table (needed for IPoE/ethX),
+# or an explicit IPv4 address.
+ISP_GW=
+
+# VPN interfaces. VPN2 may stay empty.
+VPN1=nwg0
+VPN2=
+
+# Routing tables and ip rule priorities (step 1, step 2, kill switch).
+TABLE_STEP1=1031
+TABLE_STEP2=1032
+TABLE_KS=1039
+PRIO_STEP1=30031
+PRIO_STEP2=30032
+PRIO_KS=30039
+
+# AS prefixes: cache lifetime in seconds and the widest prefix accepted.
+ASN_TTL=86400
+ASN_MIN_PREFIX=8
+
+# Network limits, seconds.
+CURL_TIMEOUT=60
+DNS_WAIT=120
+
+# Web interface: address:port to listen on (empty - off). Use the LAN address,
+# never 0.0.0.0. WEB_HOSTS - extra host names allowed in the browser address
+# bar besides IP addresses, space separated (e.g. "my.keenetic.net").
+WEB_LISTEN=
+WEB_HOSTS=

@@ -1,0 +1,3 @@
+# Always through the provider, even if it is also covered by a VPN list.
+# Put your VPN server addresses here.
+# Tags: !KS0 (block when the provider is down), !KS1/!KS2, !FB1/!FB2.

@@ -1,0 +1,2 @@
+# Through VPN2 (used only when VPN2 is set in shin4static.conf).
+# Tags: !KS0 (block), !KS1 (VPN1, then block), !FB1 (VPN1, then provider).

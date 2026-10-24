@@ -1,0 +1,117 @@
+#!/bin/sh
+# Shin4Static web API (CGI). Read-only actions are GET, changing ones are POST
+# and need the session token, which other sites cannot read.
+#
+#   GET  ?a=token                  token for POST requests
+#   GET  ?a=info                   ISP/VPN1/VPN2 interface names
+#   GET  ?a=get&name=vpn1.list     list file contents
+#   GET  ?a=status                 shin4static status
+#   GET  ?a=why&ip=1.2.3.4         shin4static why
+#   POST ?a=save&name=…&t=TOKEN    body = new list contents
+#   POST ?a=check&t=TOKEN          shin4static check
+#   POST ?a=apply&t=TOKEN          shin4static update
+
+PATH=/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin
+S4S_ROOT=${S4S_ROOT:-/opt}
+S4S_BIN=${S4S_BIN:-shin4static}
+LISTS=$S4S_ROOT/etc/shin4static/lists
+CONF=$S4S_ROOT/etc/shin4static/shin4static.conf
+TOKEN_FILE=$S4S_ROOT/var/shin4static/web.token
+MAX_BODY=262144
+
+reply() {
+	printf 'Content-Type: text/plain; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n'
+	printf 'X-S4S-Result: %s\r\n\r\n' "$1"
+}
+
+fail() {
+	reply error
+	printf '%s\n' "$1"
+	exit 0
+}
+
+param() {
+	printf '%s' "$QUERY_STRING" | tr '&' '\n' | sed -n "s/^$1=//p" | head -1
+}
+
+run_s4s() {
+	_out=$("$S4S_BIN" "$@" 2>&1)
+	if [ $? = 0 ]; then reply ok; else reply error; fi
+	printf '%s\n' "$_out"
+}
+
+# DNS rebinding guard: the Host header must be an IP or an allowed name.
+WEB_HOSTS=
+[ -f "$CONF" ] && WEB_HOSTS=$(sed -n 's/^WEB_HOSTS=//p' "$CONF" | tr -d '"'"'")
+_host=${HTTP_HOST%:*}
+if [ -n "$_host" ]; then
+	case "$_host" in
+		*[!0-9.]*)
+			case " $WEB_HOSTS localhost " in
+				*" $_host "*) ;;
+				*) fail "имя $_host не разрешено (WEB_HOSTS в shin4static.conf)" ;;
+			esac ;;
+	esac
+fi
+
+if [ ! -s "$TOKEN_FILE" ]; then
+	mkdir -p "$(dirname "$TOKEN_FILE")"
+	head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TOKEN_FILE"
+fi
+
+_a=$(param a)
+_name=$(param name)
+case "$_name" in
+	''|isp.list|vpn1.list|vpn2.list) ;;
+	*) fail "недопустимое имя файла" ;;
+esac
+
+if [ "$REQUEST_METHOD" = POST ]; then
+	[ "$(param t)" = "$(cat "$TOKEN_FILE")" ] || fail "неверный токен: обновите страницу"
+	case "$_a" in
+		save)
+			[ -n "$_name" ] || fail "не указан файл"
+			case "$CONTENT_LENGTH" in
+				''|*[!0-9]*) fail "нет данных" ;;
+			esac
+			[ "$CONTENT_LENGTH" -le "$MAX_BODY" ] || fail "файл больше $MAX_BODY байт"
+			mkdir -p "$LISTS"
+			head -c "$CONTENT_LENGTH" | tr -d '\r' > "$LISTS/.$_name.new" &&
+				mv "$LISTS/.$_name.new" "$LISTS/$_name" || fail "не удалось записать $_name"
+			reply ok
+			echo "сохранено: $_name"
+			;;
+		check) run_s4s check ;;
+		apply) run_s4s update ;;
+		*) fail "неизвестное действие" ;;
+	esac
+	exit 0
+fi
+
+case "$_a" in
+	token)
+		reply ok
+		cat "$TOKEN_FILE"
+		;;
+	info)
+		reply ok
+		grep -E '^(ISP|VPN1|VPN2)=' "$CONF" 2>/dev/null | tr -d '"'"'"
+		;;
+	get)
+		[ -n "$_name" ] || fail "не указан файл"
+		[ -f "$LISTS/$_name" ] || fail "нет файла $_name"
+		reply ok
+		cat "$LISTS/$_name"
+		;;
+	status) run_s4s status ;;
+	why)
+		_ip=$(param ip)
+		case "$_ip" in
+			''|*[!0-9.]*) fail "укажите IPv4-адрес" ;;
+		esac
+		run_s4s why "$_ip"
+		;;
+	*) fail "неизвестное действие" ;;
+esac

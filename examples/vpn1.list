@@ -1,0 +1,11 @@
+# Through VPN1. One entry per line: IPv4, subnet, range, domain or AS number.
+# Optional tag before the entry - what to do when VPN1 is down:
+#   (none)  fall back to the provider
+#   !KS0    block
+#   !KS2    VPN2, then block
+#   !FB2    VPN2, then the provider
+#
+# Examples:
+# 2ip.ru
+# !KS0 AS555842
+# !KS2 203.0.113.0/24

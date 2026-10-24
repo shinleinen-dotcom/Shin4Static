@@ -1,0 +1,39 @@
+#!/bin/sh
+# Shin4Static web interface: busybox httpd with the CGI API.
+
+PATH=/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin
+CONF=/opt/etc/shin4static/shin4static.conf
+HTTPD_CONF=/opt/etc/shin4static/httpd.conf
+WWW=/opt/share/shin4static/www
+PIDFILE=/opt/var/run/shin4static-web.pid
+TOKEN=/opt/var/shin4static/web.token
+
+WEB_LISTEN=
+[ -f "$CONF" ] && . "$CONF"
+
+start() {
+	[ -n "$WEB_LISTEN" ] || { echo "WEB_LISTEN не задан в $CONF — веб-интерфейс выключен"; return 0; }
+	[ -f "$HTTPD_CONF" ] || { echo "нет $HTTPD_CONF"; return 1; }
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "уже запущен"
+		return 0
+	fi
+	# New token on every start: old pages must reload.
+	mkdir -p "$(dirname "$TOKEN")" "$(dirname "$PIDFILE")"
+	head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TOKEN"
+	busybox httpd -f -p "$WEB_LISTEN" -h "$WWW" -c "$HTTPD_CONF" &
+	echo $! > "$PIDFILE"
+	echo "веб-интерфейс: http://$WEB_LISTEN/"
+}
+
+stop() {
+	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+	rm -f "$PIDFILE"
+}
+
+case "$1" in
+	start) start ;;
+	stop|kill) stop ;;
+	restart) stop; sleep 1; start ;;
+	*) echo "Usage: $0 {start|stop|restart}" ;;
+esac
