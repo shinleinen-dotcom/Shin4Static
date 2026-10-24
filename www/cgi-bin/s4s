@@ -42,9 +42,32 @@ run_s4s() {
 	printf '%s\n' "$_out"
 }
 
+conf_value() {
+	[ -f "$CONF" ] && sed -n "s/^$1=//p" "$CONF" | tail -1 | tr -d '"'"'"
+}
+
+# Is IPv4 $1 inside one of the space separated CIDRs in $2?
+ip_in() {
+	awk -v ip="$1" -v nets="$2" '
+		function num(s, a) { split(s, a, "."); return ((a[1] * 256 + a[2]) * 256 + a[3]) * 256 + a[4] }
+		BEGIN {
+			if (ip !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) exit 1
+			x = num(ip)
+			c = split(nets, list, " ")
+			for (i = 1; i <= c; i++) {
+				split(list[i], p, "/")
+				size = 2 ^ (32 - (p[2] == "" ? 32 : p[2]))
+				if (int(x / size) == int(num(p[1]) / size)) exit 0
+			}
+			exit 1
+		}'
+}
+
+# Clients: localhost and WEB_ALLOW only (e.g. not the guest network).
+ip_in "$REMOTE_ADDR" "127.0.0.1 $(conf_value WEB_ALLOW)" || fail "доступ с адреса ${REMOTE_ADDR:-?} запрещён (WEB_ALLOW в shin4static.conf)"
+
 # DNS rebinding guard: the Host header must be an IP or an allowed name.
-WEB_HOSTS=
-[ -f "$CONF" ] && WEB_HOSTS=$(sed -n 's/^WEB_HOSTS=//p' "$CONF" | tr -d '"'"'")
+WEB_HOSTS=$(conf_value WEB_HOSTS)
 _host=${HTTP_HOST%:*}
 if [ -n "$_host" ]; then
 	case "$_host" in

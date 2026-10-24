@@ -91,35 +91,48 @@ chmod +x "$SHARE/www/cgi-bin/s4s"
 cp "$SRC/etc/init.d/S81shin4static-web" "$PREFIX/etc/init.d/S81shin4static-web"
 chmod +x "$PREFIX/etc/init.d/S81shin4static-web"
 
-HTTPD_CONF=$ETC/httpd.conf
-if [ ! -f "$HTTPD_CONF" ]; then
-	if ! busybox httpd --help >/dev/null 2>&1; then
-		say "В busybox нет httpd — веб-интерфейс не настроен."
+# set_conf NAME VALUE: replace or append a line in shin4static.conf.
+set_conf() {
+	if grep -q "^$1=" "$CONF"; then
+		sed -i "s|^$1=.*|$1=$2|" "$CONF"
 	else
-		ask "Включить веб-интерфейс? Y/n"
-		if [ "$REPLY" != n ]; then
-			_lan=$(ip -o -4 addr show br0 2>/dev/null | awk '{ print $4; exit }')
-			[ -n "$_lan" ] || die "не найден адрес br0"
-			ask "Порт (Enter — 8088):"
-			_port=${REPLY:-8088}
-			case "$_port" in *[!0-9]*) die "порт должен быть числом" ;; esac
-			while :; do
-				printf 'Пароль для входа (логин admin): '
-				stty -echo 2>/dev/null; read -r _pw; stty echo 2>/dev/null; echo
-				[ -n "$_pw" ] && break
-				say "Пароль не может быть пустым."
-			done
-			_hash=$(busybox httpd -m "$_pw")
-			{
-				echo "A:127.0.0.1"
-				echo "A:$_lan"
-				echo "D:*"
-				echo "/:admin:$_hash"
-			} > "$HTTPD_CONF"
-			chmod 600 "$HTTPD_CONF"
-			sed -i "s/^WEB_LISTEN=.*/WEB_LISTEN=${_lan%/*}:$_port/" "$CONF"
-			grep -q '^WEB_LISTEN=' "$CONF" || echo "WEB_LISTEN=${_lan%/*}:$_port" >> "$CONF"
+		echo "$1=$2" >> "$CONF"
+	fi
+}
+
+# Web interface: own lighttpd instance, password in htdigest format.
+AUTH=$ETC/web.htdigest
+if [ ! -s "$AUTH" ]; then
+	ask "Включить веб-интерфейс (lighttpd)? Y/n"
+	if [ "$REPLY" != n ]; then
+		_had_lighttpd=$("$PREFIX/bin/opkg" list-installed | grep -c '^lighttpd ')
+		"$PREFIX/bin/opkg" install lighttpd lighttpd-mod-auth lighttpd-mod-authn_file lighttpd-mod-cgi ||
+			die "не удалось установить lighttpd"
+		# We only need the binary: do not start the default lighttpd at boot
+		# if it was installed just for us.
+		if [ "$_had_lighttpd" = 0 ] && [ -f "$PREFIX/etc/init.d/S80lighttpd" ]; then
+			"$PREFIX/etc/init.d/S80lighttpd" stop >/dev/null 2>&1
+			sed -i 's/^ENABLED=yes/ENABLED=no/' "$PREFIX/etc/init.d/S80lighttpd"
+			say "Стандартный lighttpd (S80lighttpd) выключен: Shin4Static запускает свой."
 		fi
+		_lan=$(ip -o -4 addr show br0 2>/dev/null | awk '{ print $4; exit }')
+		[ -n "$_lan" ] || die "не найден адрес br0"
+		ask "Порт (Enter — 8088):"
+		_port=${REPLY:-8088}
+		case "$_port" in ''|*[!0-9]*) die "порт должен быть числом" ;; esac
+		while :; do
+			printf 'Пароль для входа (логин admin): '
+			stty -echo 2>/dev/null; read -r _pw; stty echo 2>/dev/null; echo
+			[ -n "$_pw" ] && break
+			say "Пароль не может быть пустым."
+		done
+		_md5=$(printf '%s' "admin:Shin4Static:$_pw" | md5sum | cut -d' ' -f1)
+		umask 077
+		echo "admin:Shin4Static:$_md5" > "$AUTH"
+		umask 022
+		set_conf WEB_LISTEN "${_lan%/*}:$_port"
+		set_conf WEB_ALLOW "\"$_lan\""
+		say "Веб-интерфейс: http://${_lan%/*}:$_port/ (логин admin). Пароль сменить — удалите $AUTH и запустите install.sh."
 	fi
 fi
 

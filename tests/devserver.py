@@ -13,7 +13,7 @@ import urllib.parse
 REPO = pathlib.Path(__file__).resolve().parent.parent
 WWW = REPO / "www"
 WSL_CGI = "/mnt/" + str(REPO / "www/cgi-bin/s4s").replace(":", "").replace("\\", "/").lower()
-ENV = {"S4S_ROOT": "/tmp/s4s-dev/opt", "S4S_BIN": "/tmp/s4s-dev/s4s"}
+ENV = {"S4S_ROOT": "/tmp/s4s-dev/opt", "S4S_BIN": "/tmp/s4s-dev/s4s", "REMOTE_ADDR": "127.0.0.1"}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):

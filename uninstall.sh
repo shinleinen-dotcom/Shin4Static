@@ -21,4 +21,4 @@ if [ "$1" = --purge ]; then
 else
 	echo "Настройки и списки оставлены в $PREFIX/etc/shin4static (удалить: $0 --purge)"
 fi
-echo "Пакеты bird2, ip-full, iprange и др. не удалялись: ими могут пользоваться другие программы."
+echo "Пакеты bird2, ip-full, iprange, lighttpd и др. не удалялись: ими могут пользоваться другие программы."

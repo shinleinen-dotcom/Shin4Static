@@ -14,7 +14,7 @@ check() { if eval "$2"; then ok "$1"; else fail "$1"; fi; }
 
 export S4S_ROOT=$T/opt
 mkdir -p "$S4S_ROOT/etc/shin4static/lists" "$S4S_ROOT/var/shin4static"
-printf 'ISP=ppp0\nVPN1=nwg0\nVPN2=\nWEB_HOSTS="my.keenetic.net"\nCURL_TIMEOUT=60\n' > "$S4S_ROOT/etc/shin4static/shin4static.conf"
+printf 'ISP=ppp0\nVPN1=nwg0\nVPN2=\nWEB_HOSTS="my.keenetic.net"\nWEB_ALLOW="192.168.1.0/24"\nCURL_TIMEOUT=60\n' > "$S4S_ROOT/etc/shin4static/shin4static.conf"
 printf '1.2.3.4\n' > "$S4S_ROOT/etc/shin4static/lists/vpn1.list"
 printf '0123456789abcdef\n' > "$S4S_ROOT/var/shin4static/web.token"
 cat > "$T/stub" <<'EOF'
@@ -27,16 +27,27 @@ chmod +x "$T/stub"
 export S4S_BIN=$T/stub
 TOK=0123456789abcdef
 
-# req METHOD QUERY [BODY] [HOST]
+# req METHOD QUERY [BODY] [HOST] [CLIENT]
 req() {
 	if [ -n "$3" ]; then
-		printf '%s' "$3" | env REQUEST_METHOD="$1" QUERY_STRING="$2" CONTENT_LENGTH=${#3} HTTP_HOST="${4:-192.168.1.1:8088}" sh "$CGI"
+		printf '%s' "$3" | env REQUEST_METHOD="$1" QUERY_STRING="$2" CONTENT_LENGTH=${#3} \
+			HTTP_HOST="${4:-192.168.1.1:8088}" REMOTE_ADDR="${5-192.168.1.50}" sh "$CGI"
 	else
-		env REQUEST_METHOD="$1" QUERY_STRING="$2" CONTENT_LENGTH=0 HTTP_HOST="${4:-192.168.1.1:8088}" sh "$CGI" < /dev/null
+		env REQUEST_METHOD="$1" QUERY_STRING="$2" CONTENT_LENGTH=0 \
+			HTTP_HOST="${4:-192.168.1.1:8088}" REMOTE_ADDR="${5-192.168.1.50}" sh "$CGI" < /dev/null
 	fi > "$T/resp"
 }
 result() { sed -n 's/^X-S4S-Result: \([a-z]*\).*/\1/p' "$T/resp"; }
 body() { sed '1,/^\r\{0,1\}$/d' "$T/resp"; }
+
+req GET 'a=token' '' '' '10.1.30.7'
+check "guest network refused" "[ \"\$(result)\" = error ] && body | grep -q 'запрещён'"
+
+req GET 'a=token' '' '' '127.0.0.1'
+check "localhost allowed" "[ \"\$(result)\" = ok ]"
+
+req GET 'a=token' '' '' ''
+check "unknown client refused" "[ \"\$(result)\" = error ]"
 
 req GET 'a=token'
 check "token readable" "[ \"\$(body)\" = $TOK ] && [ \"\$(result)\" = ok ]"

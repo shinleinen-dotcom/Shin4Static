@@ -28,7 +28,9 @@ CURL_TIMEOUT=60
 DNS_WAIT=120
 
 # Web interface: address:port to listen on (empty - off). Use the LAN address,
-# never 0.0.0.0. WEB_HOSTS - extra host names allowed in the browser address
-# bar besides IP addresses, space separated (e.g. "my.keenetic.net").
+# never 0.0.0.0. WEB_ALLOW - client networks allowed to use it (localhost is
+# always allowed), e.g. "192.168.1.0/24". WEB_HOSTS - extra host names allowed
+# in the browser address bar besides IP addresses (e.g. "my.keenetic.net").
 WEB_LISTEN=
+WEB_ALLOW=
 WEB_HOSTS=
