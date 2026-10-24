@@ -7,21 +7,35 @@
 #   grp/<key>      aggregated CIDRs after overlap removal
 
 # Strictness rank for overlap resolution: isp first, then !KS0, !KS<n>,
-# !FB<n>, untagged; ties by primary (1 before 2).
+# !FB<n>, untagged; ties by primary (1 before 2). Inside isp.list the same
+# order of tags.
 group_rank() {
 	_p=${1%%.*}
 	_m=${1#*.}
+	case "$_m" in
+		K0) _r=1 ;;
+		K*) _r=2 ;;
+		F*) _r=3 ;;
+		*) _r=4 ;;
+	esac
 	if [ "$_p" = isp ]; then
-		_r=0
+		echo "0${_r}isp $1"
 	else
-		case "$_m" in
-			K0) _r=1 ;;
-			K*) _r=2 ;;
-			F*) _r=3 ;;
-			*) _r=4 ;;
-		esac
+		echo "$_r$_p $1"
 	fi
-	echo "$_r$_p $1"
+}
+
+# iprange must work: with a broken one every group comes out empty, and
+# installing that would drop all routes, the kill switch included.
+iprange_ok() {
+	[ "$(printf '192.0.2.1\n' | "$IPRANGE" - 2>/dev/null)" = 192.0.2.1 ] ||
+		die "iprange ($IPRANGE) не работает — маршруты не тронуты"
+}
+
+# Run iprange; on failure stop the whole run, nothing is installed.
+ipr() {
+	"$IPRANGE" "$@" 2>"$WORK/iprange.err" ||
+		die "iprange $*: $(head -1 "$WORK/iprange.err") — маршруты не тронуты"
 }
 
 parse_lists() {
@@ -78,29 +92,26 @@ collect_groups() {
 				fi ;;
 		esac
 	done < "$WORK/records"
+
+	# Forget the addresses of domains no longer in the lists.
+	if [ "$DRY_RUN" != 1 ]; then
+		awk -F '\t' '$3 == "domain" { print $4 }' "$WORK/records" > "$WORK/domains"
+		for _c in "$S4S_STATE"/dns/*; do
+			[ -f "$_c" ] || continue
+			grep -qxF "${_c##*/}" "$WORK/domains" || rm -f "$_c"
+		done
+	fi
 }
 
-# Aggregate each group; an empty result for a group that has entries falls
-# back to the last good result of that group.
 aggregate_groups() {
 	for _cnt in "$WORK"/in/*.n; do
 		[ -e "$_cnt" ] || continue
 		_key=$(basename "$_cnt" .n)
 		: > "$WORK/grp/$_key.raw"
 		if [ -s "$WORK/in/$_key" ]; then
-			"$IPRANGE" "$WORK/in/$_key" > "$WORK/grp/$_key.raw" 2>"$WORK/iprange.err" ||
-				warn "группа $_key: iprange: $(head -1 "$WORK/iprange.err")"
+			ipr "$WORK/in/$_key" > "$WORK/grp/$_key.raw"
 		fi
-		if [ ! -s "$WORK/grp/$_key.raw" ]; then
-			if [ -s "$S4S_STATE/groups/$_key" ]; then
-				warn "группа «$(describe_group "$_key")»: адресов не получено, оставляю прежние"
-				cp "$S4S_STATE/groups/$_key" "$WORK/grp/$_key.raw"
-			else
-				warn "группа «$(describe_group "$_key")»: адресов не получено"
-			fi
-		fi
-		[ "$DRY_RUN" = 1 ] || [ ! -s "$WORK/grp/$_key.raw" ] ||
-			cp "$WORK/grp/$_key.raw" "$S4S_STATE/groups/$_key"
+		[ -s "$WORK/grp/$_key.raw" ] || warn "группа «$(describe_group "$_key")»: адресов не получено"
 	done
 }
 
@@ -114,10 +125,10 @@ resolve_overlaps() {
 	while read -r _rank _key; do
 		_src=$WORK/grp/$_key.raw
 		if [ -s "$WORK/taken" ] && [ -s "$_src" ]; then
-			"$IPRANGE" --common "$_src" "$WORK/taken" > "$WORK/overlap" 2>/dev/null
+			ipr --common "$_src" "$WORK/taken" > "$WORK/overlap"
 			if [ -s "$WORK/overlap" ]; then
 				warn "«$(describe_group "$_key")» пересекается с более строгими правилами ($(wc -l < "$WORK/overlap" | tr -d ' ') сетей, например $(head -1 "$WORK/overlap")) — они остаются за более строгими"
-				"$IPRANGE" "$_src" --exclude-next "$WORK/taken" > "$WORK/grp/$_key"
+				ipr "$_src" --exclude-next "$WORK/taken" > "$WORK/grp/$_key"
 			else
 				cp "$_src" "$WORK/grp/$_key"
 			fi
@@ -125,7 +136,7 @@ resolve_overlaps() {
 			cp "$_src" "$WORK/grp/$_key"
 		fi
 		[ -s "$WORK/grp/$_key" ] || continue
-		"$IPRANGE" "$WORK/taken" "$WORK/grp/$_key" > "$WORK/taken.new"
+		ipr "$WORK/taken" "$WORK/grp/$_key" > "$WORK/taken.new"
 		mv "$WORK/taken.new" "$WORK/taken"
 	done < "$WORK/order"
 }
@@ -138,21 +149,30 @@ emit_routes() {
 		*[!0-9.]*) _sfx=" via \"$2\";" ;;
 		*) _sfx=" via $2;" ;;
 	esac
-	"$IPRANGE" --print-prefix 'route ' --print-suffix-nets "$_sfx" --print-suffix-ips "/32$_sfx" "$1"
+	ipr --print-prefix 'route ' --print-suffix-nets "$_sfx" --print-suffix-ips "/32$_sfx" "$1"
 }
 
+# Target for isp.list routes into ISP_TARGET. With ISP_GW=auto the last
+# gateway seen is remembered: right after boot or while the provider is down
+# there is no default route, and "via eth3" without a gateway would make the
+# addresses in isp.list (VPN servers) unreachable once the provider is back.
 isp_target() {
 	case "$ISP_GW" in
-		'') echo "$ISP" ;;
+		'') ISP_TARGET=$ISP ;;
 		auto)
-			_gw=$("$IP" route show 2>/dev/null | awk -v dev="$ISP" '$0 ~ " dev " dev "( |$)" && / via / { for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
-			if [ -n "$_gw" ]; then
-				echo "$_gw"
+			ISP_TARGET=$("$IP" route show 2>/dev/null | awk -v dev="$ISP" '$0 ~ " dev " dev "( |$)" && / via / { for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
+			if [ -n "$ISP_TARGET" ]; then
+				[ "$DRY_RUN" = 1 ] || echo "$ISP_TARGET" > "$S4S_STATE/isp_gw"
 			else
-				warn "ISP_GW=auto: шлюз провайдера не найден, маршруты пойдут прямо на $ISP"
-				echo "$ISP"
+				ISP_TARGET=$(cat "$S4S_STATE/isp_gw" 2>/dev/null)
+				case "$ISP_TARGET" in
+					''|*[!0-9.]*)
+						warn "ISP_GW=auto: шлюз провайдера не найден, маршруты пойдут прямо на $ISP"
+						ISP_TARGET=$ISP ;;
+					*) warn "ISP_GW=auto: сейчас шлюза провайдера нет, беру прежний $ISP_TARGET" ;;
+				esac
 			fi ;;
-		*) echo "$ISP_GW" ;;
+		*) ISP_TARGET=$ISP_GW ;;
 	esac
 }
 
@@ -162,7 +182,7 @@ write_route_files() {
 	: > "$_out/step1.routes"
 	: > "$_out/step2.routes"
 	: > "$_out/ks.routes"
-	_isp=$(isp_target)
+	ISP_TARGET=
 	for _g in "$WORK"/grp/*; do
 		case "$_g" in *.raw) continue ;; esac
 		[ -s "$_g" ] || continue
@@ -172,7 +192,8 @@ write_route_files() {
 		_n=${_m#?}
 		_m=${_m%?}
 		if [ "$_p" = isp ]; then
-			_t1=$_isp
+			[ -n "$ISP_TARGET" ] || isp_target
+			_t1=$ISP_TARGET
 		else
 			_t1=$(exit_iface "$_p")
 		fi
@@ -193,6 +214,18 @@ write_route_files() {
 			} >> "$_out/ks.routes"
 		fi
 	done
+}
+
+# Groups as applied, for "shin4static why".
+save_groups() {
+	rm -rf "$S4S_STATE/groups.new"
+	mkdir -p "$S4S_STATE/groups.new"
+	for _g in "$WORK"/grp/*; do
+		case "$_g" in *.raw) continue ;; esac
+		[ -s "$_g" ] && cp "$_g" "$S4S_STATE/groups.new/"
+	done
+	rm -rf "$S4S_STATE/groups"
+	mv "$S4S_STATE/groups.new" "$S4S_STATE/groups"
 }
 
 # BIRD protocols for the tables; regenerated from settings on every run.
@@ -240,6 +273,7 @@ EOF
 
 # Full generation into directory $1.
 generate() {
+	iprange_ok
 	collect_groups
 	aggregate_groups
 	resolve_overlaps

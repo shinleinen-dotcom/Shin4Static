@@ -122,10 +122,13 @@
 		return serialize(parseText(text)).text;
 	}
 
+	// No leading zeros: iprange reads 010 as octal 8 (see lib/parse.awk).
 	function ipok(s) {
 		const p = s.split(".");
-		return p.length === 4 && p.every((x) => /^\d{1,3}$/.test(x) && Number(x) <= 255);
+		return p.length === 4 && p.every((x) => /^(0|[1-9]\d{0,2})$/.test(x) && Number(x) <= 255);
 	}
+
+	const zero = (s) => (/(^|\D)0\d/.test(s) ? ": ведущий ноль" : "");
 
 	// Entry kind for the badge, or { err } — mirrors lib/parse.awk.
 	function classify(v) {
@@ -133,10 +136,10 @@
 		if (!v) return { err: "пустая запись" };
 		if (/^as\d+$/i.test(v)) return { kind: "AS" };
 		let m = v.match(/^([\d.]+)\s*-\s*([\d.]+)$/);
-		if (m) return ipok(m[1]) && ipok(m[2]) ? { kind: "диапазон" } : { err: "неверный диапазон" };
+		if (m) return ipok(m[1]) && ipok(m[2]) ? { kind: "диапазон" } : { err: "неверный диапазон" + zero(v) };
 		m = v.match(/^([\d.]+)\/(\d+)$/);
-		if (m) return ipok(m[1]) && Number(m[2]) <= 32 ? { kind: "подсеть" } : { err: "неверная подсеть" };
-		if (/^[\d.]+$/.test(v)) return ipok(v) ? { kind: "IP" } : { err: "неверный IPv4" };
+		if (m) return ipok(m[1]) && Number(m[2]) <= 32 ? { kind: "подсеть" } : { err: "неверная подсеть" + zero(m[1]) };
+		if (/^[\d.]+$/.test(v)) return ipok(v) ? { kind: "IP" } : { err: "неверный IPv4" + zero(v) };
 		if (/:\/\//.test(v)) return { err: "это URL: нужен только домен" };
 		if (/^\*/.test(v)) return { err: "маски *. не поддерживаются" };
 		if (/\s/.test(v)) return { err: "одна запись на строку" };

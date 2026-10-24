@@ -48,7 +48,19 @@ rollback_generated() {
 	done
 }
 
+# A group header without a single route can only come from a failure
+# (write_route_files skips empty groups): never install that over routes.
+routes_sane() {
+	for _f in step1.routes step2.routes ks.routes; do
+		if grep -q '^#' "$1/$_f" 2>/dev/null && ! grep -q '^route ' "$1/$_f"; then
+			err "в новом $_f есть группы без маршрутов — маршруты не тронуты"
+			return 1
+		fi
+	done
+}
+
 apply_generated() {
+	routes_sane "$1" || return 1
 	_changed=$(install_generated "$1")
 	if [ -z "$_changed" ]; then
 		info "маршруты не изменились"
@@ -70,7 +82,10 @@ apply_generated() {
 	if printf '%s\n' "$_res" | grep -qi 'reconfigur'; then
 		info "BIRD перечитал конфигурацию"
 	else
-		err "birdc configure: $(printf '%s\n' "$_res" | tail -1)"
+		# Keep the files in step with what BIRD runs, or the next run would
+		# see "unchanged" and never retry.
+		rollback_generated "$_changed"
+		err "birdc configure: $(printf '%s\n' "$_res" | tail -1) — вернул прежние файлы"
 		return 1
 	fi
 }

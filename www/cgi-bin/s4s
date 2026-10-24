@@ -3,28 +3,40 @@
 # and need the session token, which other sites cannot read.
 #
 #   GET  ?a=token                  token for POST requests
-#   GET  ?a=info                   ISP/VPN1/VPN2 interface names
+#   GET  ?a=info                   ISP/VPN1/VPN2 interface names, WEB_AUTH
 #   GET  ?a=get&name=vpn1.list     list file contents
 #   GET  ?a=status                 shin4static status
 #   GET  ?a=why&ip=1.2.3.4         shin4static why
-#   POST ?a=save&name=…&t=TOKEN    body = new list contents
+#   POST ?a=save&name=…&base=MD5&t=TOKEN
+#                                  body = new list contents; base = md5 of the
+#                                  text the page loaded (refused if changed)
 #   POST ?a=check&t=TOKEN          shin4static check
 #   POST ?a=apply&t=TOKEN          shin4static update
 #
 # With WEB_AUTH=router (password of the router's web interface):
-#   POST ?a=login                  body = "login\npassword", sets a session cookie
+#   GET  ?a=challenge              "id\nrealm\nchallenge" from the router
+#   POST ?a=login                  body = "login\nid\nsha256(challenge + md5(login:realm:password))",
+#                                  sets a session cookie; the password never leaves the browser
 #   POST ?a=logout&t=TOKEN
 # Every other action then needs the session; without it the answer is
 # X-S4S-Result: auth. With WEB_AUTH=local lighttpd asks for its own password.
+#
+# The mode is the one S81shin4static-web started lighttpd with (web.mode),
+# not the current config: the two must never disagree.
 
-PATH=/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin
+# Exported: lighttpd starts us with no PATH at all.
+export PATH=/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin
 S4S_ROOT=${S4S_ROOT:-/opt}
 S4S_BIN=${S4S_BIN:-shin4static}
 CURL=${CURL:-curl}
 LISTS=$S4S_ROOT/etc/shin4static/lists
 CONF=$S4S_ROOT/etc/shin4static/shin4static.conf
-TOKEN_FILE=$S4S_ROOT/var/shin4static/web.token
-SESSIONS=$S4S_ROOT/var/shin4static/web-sessions
+STATE=$S4S_ROOT/var/shin4static
+TOKEN_FILE=$STATE/web.token
+MODE_FILE=$STATE/web.mode
+SESSIONS=$STATE/web-sessions
+PENDING=$STATE/web-login
+LOGIN_FAILS=$STATE/web-login.fails
 MAX_BODY=262144
 COOKIE=s4s_session
 HEADERS=
@@ -53,8 +65,16 @@ run_s4s() {
 	printf '%s\n' "$_out"
 }
 
+# A setting as the shell sees it, the same way S81shin4static-web and
+# shin4static read the file (quotes, comments and spaces included).
 conf_value() {
-	[ -f "$CONF" ] && sed -n "s/^$1=//p" "$CONF" | tail -1 | tr -d '"'"'"
+	[ -f "$CONF" ] || return 0
+	(. "$CONF" >/dev/null 2>&1; eval "printf '%s' \"\${$1-}\"")
+}
+
+# Seconds since the file was last modified.
+age() {
+	echo $(($(date +%s) - $(date -r "$1" +%s 2>/dev/null || echo 0)))
 }
 
 # Is IPv4 $1 inside one of the space separated CIDRs in $2?
@@ -90,6 +110,27 @@ if [ -n "$_host" ]; then
 	esac
 fi
 
+# Changing requests only from our own page. Browsers send Origin with every
+# POST and Sec-Fetch-Site with every request, so a page of another site that
+# posts here (the login form included) is refused.
+if [ "$REQUEST_METHOD" = POST ]; then
+	case "${HTTP_SEC_FETCH_SITE:-same-origin}" in
+		same-origin) ;;
+		*) fail "запрос с чужого сайта отклонён" ;;
+	esac
+	case "$HTTP_ORIGIN" in
+		''|"http://$HTTP_HOST"|"https://$HTTP_HOST") ;;
+		*) fail "запрос с чужого сайта отклонён" ;;
+	esac
+fi
+
+WEB_AUTH=$(cat "$MODE_FILE" 2>/dev/null)
+case "$WEB_AUTH" in
+	router) ;;
+	local) [ -n "$REMOTE_USER" ] || fail "lighttpd не проверил пароль: перезапустите /opt/etc/init.d/S81shin4static-web" ;;
+	*) fail "веб-интерфейс запущен не через S81shin4static-web: перезапустите его" ;;
+esac
+
 # 32 random hex chars. The kernel's uuid needs no tools (Keenetic's busybox
 # has no od); od is the fallback.
 random_hex() {
@@ -101,43 +142,38 @@ random_hex() {
 TOKEN=
 [ -f "$TOKEN_FILE" ] && TOKEN=$(cat "$TOKEN_FILE")
 if [ ${#TOKEN} != 32 ]; then
-	mkdir -p "$(dirname "$TOKEN_FILE")"
+	mkdir -p "$STATE"
 	TOKEN=$(random_hex)
 	[ ${#TOKEN} = 32 ] || fail "не удалось получить случайное значение для токена"
 	printf '%s' "$TOKEN" > "$TOKEN_FILE"
 fi
 
-sha256_hex() {
-	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum | cut -d' ' -f1
-	else
-		openssl dgst -sha256 -r | cut -d' ' -f1
-	fi
-}
-
-# Check login/password against the router's web interface (NDM /auth):
-# GET gives realm and challenge, POST sha256(challenge + md5(login:realm:pw)).
-# Returns 0 - accepted, 1 - rejected, 2 - router did not answer as expected.
-router_auth() {
+router_url() {
 	_url=$(conf_value ROUTER_URL)
 	[ -n "$_url" ] || _url="http://$(conf_value WEB_LISTEN | sed 's/:.*//')"
-	_jar=$(mktemp /tmp/s4s-auth.XXXXXX) || return 2
-	_hdr=$("$CURL" -s -m 10 -c "$_jar" -D - -o /dev/null "$_url/auth" | tr -d '\r')
-	_realm=$(printf '%s\n' "$_hdr" | sed -n 's/^[Xx]-[Nn][Dd][Mm]-[Rr][Ee][Aa][Ll][Mm]: *//p' | head -1)
-	_chal=$(printf '%s\n' "$_hdr" | sed -n 's/^[Xx]-[Nn][Dd][Mm]-[Cc][Hh][Aa][Ll][Ll][Ee][Nn][Gg][Ee]: *//p' | head -1)
-	if [ -z "$_realm" ] || [ -z "$_chal" ]; then
-		rm -f "$_jar"
-		return 2
-	fi
-	_md5=$(printf '%s' "$1:$_realm:$2" | md5sum | cut -d' ' -f1)
-	_sha=$(printf '%s' "$_chal$_md5" | sha256_hex)
-	_code=$(printf '{"login":"%s","password":"%s"}' "$1" "$_sha" |
-		"$CURL" -s -m 10 -b "$_jar" -c "$_jar" -o /dev/null -w '%{http_code}' \
-			-H 'Content-Type: application/json' --data-binary @- "$_url/auth")
-	# Do not leave an open session on the router.
-	[ "$_code" = 200 ] && "$CURL" -s -m 5 -b "$_jar" -X DELETE -o /dev/null "$_url/auth"
-	rm -f "$_jar"
-	[ "$_code" = 200 ]
+	printf '%s' "$_url"
+}
+
+# Lock dir $1, taking over one left by a dead CGI after $2 seconds.
+# Returns 1 if somebody else holds it.
+lock_dir() {
+	mkdir "$1" 2>/dev/null && return 0
+	[ "$(age "$1")" -ge "$2" ] || return 1
+	rm -rf "$1"
+	mkdir "$1" 2>/dev/null
+}
+
+# After 3 wrong passwords every attempt waits 30 s more (at most 10 min),
+# for all clients together: parallel requests do not help guessing.
+login_wait() {
+	_n=$(cat "$LOGIN_FAILS" 2>/dev/null)
+	case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+	[ "$_n" -ge 3 ] || { echo 0; return; }
+	_d=$(((_n - 2) * 30))
+	[ "$_d" -le 600 ] || _d=600
+	_d=$((_d - $(age "$LOGIN_FAILS")))
+	[ "$_d" -gt 0 ] || _d=0
+	echo "$_d"
 }
 
 session_id() {
@@ -150,7 +186,7 @@ session_valid() {
 	[ -n "$_sid" ] && [ -f "$SESSIONS/$_sid" ] || return 1
 	_ttl=$(conf_value WEB_SESSION_TTL)
 	case "$_ttl" in ''|*[!0-9]*) _ttl=43200 ;; esac
-	if [ $(($(date +%s) - $(date -r "$SESSIONS/$_sid" +%s))) -ge "$_ttl" ]; then
+	if [ "$(age "$SESSIONS/$_sid")" -ge "$_ttl" ]; then
 		rm -f "$SESSIONS/$_sid"
 		return 1
 	fi
@@ -159,29 +195,67 @@ session_valid() {
 
 _a=$(param a)
 
-WEB_AUTH=$(conf_value WEB_AUTH)
 if [ "$WEB_AUTH" = router ]; then
+	# Step 1: the router's challenge. Its cookie jar stays here under a
+	# one-time id; the browser computes the answer itself.
+	if [ "$_a" = challenge ]; then
+		mkdir -p "$PENDING"
+		for _j in "$PENDING"/*; do
+			[ -f "$_j" ] && [ "$(age "$_j")" -ge 120 ] && rm -f "$_j"
+		done
+		_id=$(random_hex)
+		[ ${#_id} = 32 ] || fail "не удалось получить случайное значение"
+		_hdr=$("$CURL" -s -m 10 -c "$PENDING/$_id" -D - -o /dev/null "$(router_url)/auth" | tr -d '\r')
+		_realm=$(printf '%s\n' "$_hdr" | sed -n 's/^[Xx]-[Nn][Dd][Mm]-[Rr][Ee][Aa][Ll][Mm]: *//p' | head -1)
+		_chal=$(printf '%s\n' "$_hdr" | sed -n 's/^[Xx]-[Nn][Dd][Mm]-[Cc][Hh][Aa][Ll][Ll][Ee][Nn][Gg][Ee]: *//p' | head -1)
+		if [ -z "$_realm" ] || [ -z "$_chal" ]; then
+			rm -f "$PENDING/$_id"
+			fail "роутер не ответил на проверку пароля (ROUTER_URL в shin4static.conf)"
+		fi
+		touch "$PENDING/$_id"
+		reply ok
+		printf '%s\n%s\n%s\n' "$_id" "$_realm" "$_chal"
+		exit 0
+	fi
+	# Step 2: pass the browser's answer to the router.
 	if [ "$_a" = login ]; then
 		[ "$REQUEST_METHOD" = POST ] || fail "вход только через POST"
 		case "$CONTENT_LENGTH" in ''|*[!0-9]*) fail "нет данных" ;; esac
 		[ "$CONTENT_LENGTH" -le 1024 ] || fail "слишком длинные данные"
 		_body=$(head -c "$CONTENT_LENGTH" | tr -d '\r')
-		_user=$(printf '%s\n' "$_body" | head -1)
-		_pass=$(printf '%s\n' "$_body" | sed '1d')
+		_user=$(printf '%s\n' "$_body" | sed -n 1p)
+		_id=$(printf '%s\n' "$_body" | sed -n 2p)
+		_hash=$(printf '%s\n' "$_body" | sed -n 3p)
+		case "$_id" in *[!0-9a-f]*) _id= ;; esac
+		[ ${#_id} = 32 ] && [ -f "$PENDING/$_id" ] && [ "$(age "$PENDING/$_id")" -lt 120 ] ||
+			fail "вход устарел: попробуйте ещё раз"
+		# One attempt at a time for everybody, and each challenge only once.
+		lock_dir "$PENDING.lock" 30 || { rm -f "$PENDING/$_id"; fail "идёт другая попытка входа, повторите"; }
+		_jar=$PENDING/$_id.used
+		trap 'rm -f "$_jar"; rmdir "$PENDING.lock" 2>/dev/null' EXIT
+		mv "$PENDING/$_id" "$_jar" 2>/dev/null || fail "вход устарел: попробуйте ещё раз"
+		_wait=$(login_wait)
+		[ "$_wait" = 0 ] || fail "слишком много неверных паролей: подождите $_wait с"
 		_users=$(conf_value WEB_USERS)
 		case "$_user" in ''|*[!A-Za-z0-9_.-]*) _user= ;; esac
 		case " ${_users:-admin} " in
 			*" $_user "*) ;;
 			*) _user= ;;
 		esac
-		if [ -n "$_user" ] && [ -n "$_pass" ]; then
-			router_auth "$_user" "$_pass"
-			_rc=$?
+		case "$_hash" in *[!0-9a-f]*) _hash= ;; esac
+		_code=
+		if [ -n "$_user" ] && [ ${#_hash} = 64 ]; then
+			_code=$(printf '{"login":"%s","password":"%s"}' "$_user" "$_hash" |
+				"$CURL" -s -m 10 -b "$_jar" -c "$_jar" -o /dev/null -w '%{http_code}' \
+					-H 'Content-Type: application/json' --data-binary @- "$(router_url)/auth")
 		else
-			_rc=1
+			_code=401
 		fi
-		case "$_rc" in
-			0)
+		case "$_code" in
+			200)
+				# Do not leave an open session on the router.
+				"$CURL" -s -m 5 -b "$_jar" -X DELETE -o /dev/null "$(router_url)/auth"
+				rm -f "$LOGIN_FAILS"
 				mkdir -p "$SESSIONS"
 				_sid=$(random_hex)
 				[ ${#_sid} = 32 ] || fail "не удалось создать сессию"
@@ -190,12 +264,15 @@ if [ "$WEB_AUTH" = router ]; then
 				reply ok
 				echo "вход: $_user"
 				;;
-			2)
-				fail "роутер не ответил на проверку пароля (ROUTER_URL в shin4static.conf)"
-				;;
-			*)
+			401|403)
+				_n=$(cat "$LOGIN_FAILS" 2>/dev/null)
+				case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+				echo $((_n + 1)) > "$LOGIN_FAILS"
 				sleep 2
 				fail "неверный логин или пароль"
+				;;
+			*)
+				fail "роутер не ответил на проверку пароля (ROUTER_URL в shin4static.conf)"
 				;;
 		esac
 		exit 0
@@ -229,9 +306,20 @@ if [ "$REQUEST_METHOD" = POST ]; then
 				''|*[!0-9]*) fail "нет данных" ;;
 			esac
 			[ "$CONTENT_LENGTH" -le "$MAX_BODY" ] || fail "файл больше $MAX_BODY байт"
+			_base=$(param base)
+			case "$_base" in *[!0-9a-f]*) _base= ;; esac
+			[ ${#_base} = 32 ] || fail "нет версии файла: обновите страницу"
 			mkdir -p "$LISTS"
-			head -c "$CONTENT_LENGTH" | tr -d '\r' > "$LISTS/.$_name.new" &&
-				mv "$LISTS/.$_name.new" "$LISTS/$_name" || fail "не удалось записать $_name"
+			lock_dir "$LISTS/.save.lock" 30 || fail "файл сейчас сохраняется из другого окна, повторите"
+			_tmp=
+			trap 'rm -f "$_tmp"; rmdir "$LISTS/.save.lock" 2>/dev/null' EXIT
+			# Another tab or an SSH edit changed the file after this page
+			# loaded it: do not overwrite their changes.
+			[ "$(cat "$LISTS/$_name" 2>/dev/null | md5sum | cut -d' ' -f1)" = "$_base" ] ||
+				fail "$_name изменён на роутере после загрузки страницы. Скопируйте свои правки и обновите страницу."
+			_tmp=$(mktemp "$LISTS/.$_name.XXXXXX") || fail "не удалось записать $_name"
+			head -c "$CONTENT_LENGTH" | tr -d '\r' > "$_tmp" && chmod 644 "$_tmp" &&
+				mv "$_tmp" "$LISTS/$_name" || fail "не удалось записать $_name"
 			reply ok
 			echo "сохранено: $_name"
 			;;
@@ -249,7 +337,10 @@ case "$_a" in
 		;;
 	info)
 		reply ok
-		grep -E '^(ISP|VPN1|VPN2|WEB_AUTH)=' "$CONF" 2>/dev/null | tr -d '"'"'"
+		for _v in ISP VPN1 VPN2; do
+			printf '%s=%s\n' "$_v" "$(conf_value "$_v")"
+		done
+		echo "WEB_AUTH=$WEB_AUTH"
 		;;
 	get)
 		[ -n "$_name" ] || fail "не указан файл"

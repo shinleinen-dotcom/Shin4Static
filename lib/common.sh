@@ -69,34 +69,66 @@ s4s_birdc() {
 	"$BIRDC" ${S4S_SOCK:+-s "$S4S_SOCK"} "$@"
 }
 
-load_config() {
-	ISP= ISP_GW= VPN1= VPN2=
-	TABLE_STEP1=1031 TABLE_STEP2=1032 TABLE_KS=1039
-	PRIO_STEP1=30031 PRIO_STEP2=30032 PRIO_KS=30039
-	ASN_TTL=86400 ASN_MIN_PREFIX=8
-	CURL_TIMEOUT=60 DNS_WAIT=120
+NUM_DEFAULTS='TABLE_STEP1=1031 TABLE_STEP2=1032 TABLE_KS=1039
+PRIO_STEP1=30031 PRIO_STEP2=30032 PRIO_KS=30039
+ASN_TTL=86400 ASN_MIN_PREFIX=8 CURL_TIMEOUT=60 DNS_WAIT=120'
 
-	[ -f "$S4S_CONF" ] || die "нет файла настроек $S4S_CONF"
-	. "$S4S_CONF"
+# load_config [lenient]: lenient is for stopping and cleaning up (uninstall,
+# rules stop, flush): a broken or missing config gives defaults and a warning
+# instead of leaving BIRD, rules and routes behind.
+load_config() {
+	_lenient=$1
+	_fatal=die
+	[ -n "$_lenient" ] && _fatal=warn
+	ISP= ISP_GW= VPN1= VPN2=
+	eval "$NUM_DEFAULTS"
+
+	if [ ! -f "$S4S_CONF" ]; then
+		$_fatal "нет файла настроек $S4S_CONF"
+	elif (. "$S4S_CONF") >/dev/null 2>&1; then
+		. "$S4S_CONF"
+	else
+		$_fatal "ошибка в $S4S_CONF: $( (. "$S4S_CONF") 2>&1 >/dev/null | tail -1)"
+	fi
+
+	for v in $NUM_DEFAULTS; do
+		v=${v%%=*}
+		eval "val=\$$v"
+		case "$val" in
+			''|*[!0-9]*)
+				$_fatal "в $S4S_CONF $v должно быть числом, сейчас: '$val'"
+				eval "$(printf '%s\n' $NUM_DEFAULTS | grep "^$v=")" ;;
+		esac
+	done
+	# Kernel tables 0 and 253-255 are unspec/default/main/local.
+	for v in TABLE_STEP1 TABLE_STEP2 TABLE_KS; do
+		eval "val=\$$v"
+		case "$val" in
+			0|253|254|255) $_fatal "в $S4S_CONF $v=$val — это служебная таблица ядра" ;;
+		esac
+	done
+	if [ "$TABLE_STEP1" = "$TABLE_STEP2" ] || [ "$TABLE_STEP1" = "$TABLE_KS" ] || [ "$TABLE_STEP2" = "$TABLE_KS" ] ||
+		[ "$PRIO_STEP1" = "$PRIO_STEP2" ] || [ "$PRIO_STEP1" = "$PRIO_KS" ] || [ "$PRIO_STEP2" = "$PRIO_KS" ]; then
+		$_fatal "в $S4S_CONF номера TABLE_* и PRIO_* не должны повторяться"
+	fi
+	[ -n "$_lenient" ] && return 0
 
 	[ -n "$ISP" ] || die "в $S4S_CONF не задан ISP"
 	[ -n "$VPN1" ] || die "в $S4S_CONF не задан VPN1"
-	for v in TABLE_STEP1 TABLE_STEP2 TABLE_KS PRIO_STEP1 PRIO_STEP2 PRIO_KS ASN_TTL ASN_MIN_PREFIX CURL_TIMEOUT DNS_WAIT; do
-		eval "val=\$$v"
-		case "$val" in
-			''|*[!0-9]*) die "в $S4S_CONF $v должно быть числом, сейчас: '$val'" ;;
-		esac
-	done
 	for v in ISP VPN1 VPN2; do
 		eval "val=\$$v"
 		case "$val" in
 			*[!A-Za-z0-9_.-]*) die "в $S4S_CONF $v содержит недопустимые символы: '$val'" ;;
 		esac
 	done
+	case "$ISP_GW" in
+		''|auto) ;;
+		*[!0-9.]*|*.*.*.*.*) die "в $S4S_CONF ISP_GW должен быть пустым, auto или IPv4-адресом, сейчас: '$ISP_GW'" ;;
+	esac
 
 	VPNS=1
 	[ -n "$VPN2" ] && VPNS="1 2"
-	mkdir -p "$S4S_STATE" "$S4S_STATE/asn" "$S4S_STATE/groups" "$S4S_GEN" 2>/dev/null
+	mkdir -p "$S4S_STATE" "$S4S_STATE/asn" "$S4S_STATE/dns" "$S4S_GEN" 2>/dev/null
 }
 
 # Interface for an exit: isp, 1, 2.
@@ -138,13 +170,14 @@ describe_group() {
 }
 
 # Lock against a second run; stale locks of dead processes are removed.
+# Busy: exit code 75, so the web page says "busy" instead of "done".
 lock_acquire() {
 	_lock=$S4S_STATE/lock
 	if ! mkdir "$_lock" 2>/dev/null; then
 		_pid=$(cat "$_lock/pid" 2>/dev/null)
 		if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
-			info "уже выполняется (pid $_pid), выхожу"
-			exit 0
+			printf 'Ошибка: уже выполняется обновление (pid %s) — повторите через минуту\n' "$_pid" >&2
+			exit 75
 		fi
 		rm -rf "$_lock"
 		mkdir "$_lock" 2>/dev/null || die "не удалось создать блокировку $_lock"

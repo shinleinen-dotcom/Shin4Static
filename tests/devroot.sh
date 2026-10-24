@@ -75,4 +75,6 @@ export CURL=$D/mock/curl BIRDC=$D/mock/birdc IP=$D/mock/ip
 exec sh $REPO/bin/shin4static "\$@"
 EOF
 chmod +x "$D/mock/"* "$D/s4s"
+# As S81shin4static-web writes it for the running lighttpd.
+echo router > "$R/var/shin4static/web.mode"
 echo "S4S_ROOT=$R S4S_BIN=$D/s4s"

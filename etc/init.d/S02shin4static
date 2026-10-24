@@ -2,7 +2,8 @@
 # Shin4Static: ip rules and its own BIRD instance at boot, then the first
 # route update in background. Independent of S70bird and the system bird.
 
-PATH=/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin
+# Exported: init may start us with no PATH at all.
+export PATH=/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin
 
 case "$1" in
 	start)

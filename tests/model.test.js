@@ -112,5 +112,24 @@ t("classify", () => {
 	);
 });
 
+t("leading zeros refused (iprange reads them as octal)", () => {
+	for (const v of ["010.20.30.0/24", "192.168.001.010", "1.2.3.4 - 1.2.3.09", "095.1.2.3"]) {
+		const r = M.classify(v);
+		assert.ok(r.err && r.err.includes("ведущий ноль"), `${v}: ${JSON.stringify(r)}`);
+	}
+	for (const v of ["10.0.0.0/8", "0.0.0.0/0", "100.200.0.1", "1.2.3.4 - 1.2.3.10"]) {
+		assert.ok(M.classify(v).kind, v);
+	}
+});
+
+t("md5 and sha256 match node crypto", () => {
+	const H = require("../www/hash.js");
+	const crypto = require("crypto");
+	for (const s of ["", "abc", "admin:Keenetic Test:secret", "x".repeat(55), "x".repeat(56), "x".repeat(64), "x".repeat(1000), "!KS0 1.2.3.4  # офис\n"]) {
+		assert.strictEqual(H.md5(s), crypto.createHash("md5").update(s, "utf8").digest("hex"), "md5 " + s.length);
+		assert.strictEqual(H.sha256(s), crypto.createHash("sha256").update(s, "utf8").digest("hex"), "sha256 " + s.length);
+	}
+});
+
 console.log(fails ? `\nПровалено: ${fails}` : "\nВсе тесты прошли");
 process.exitCode = fails ? 1 : 0;

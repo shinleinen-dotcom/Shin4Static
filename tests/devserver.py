@@ -34,7 +34,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         query = urllib.parse.urlsplit(self.path).query
         env = dict(ENV, REQUEST_METHOD=self.command, QUERY_STRING=query,
                    CONTENT_LENGTH=str(len(body)), HTTP_HOST=self.headers.get("Host", ""),
-                   HTTP_COOKIE=self.headers.get("Cookie", ""))
+                   HTTP_COOKIE=self.headers.get("Cookie", ""),
+                   HTTP_ORIGIN=self.headers.get("Origin", ""),
+                   HTTP_SEC_FETCH_SITE=self.headers.get("Sec-Fetch-Site", ""))
         # wsl.exe hands the command to a shell: quote everything.
         cmd = ["wsl.exe", "-d", "Debian", "--", "env"] + [shlex.quote(f"{k}={v}") for k, v in env.items()] + ["sh", WSL_CGI]
         out = subprocess.run(cmd, input=body, capture_output=True).stdout

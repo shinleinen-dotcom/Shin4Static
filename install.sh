@@ -1,6 +1,8 @@
 #!/bin/sh
 # Shin4Static installer. Re-run it to update: settings and lists are kept.
 
+# Entware first: the firmware shell has no readlink/dirname.
+export PATH=/opt/bin:/opt/sbin:${PATH:-/sbin:/bin:/usr/sbin:/usr/bin}
 SRC=$(dirname "$(readlink -f "$0")")
 PREFIX=/opt
 SHARE=$PREFIX/share/shin4static
@@ -12,7 +14,7 @@ die() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 
 ask() {
 	printf '%s ' "$1"
-	read -r REPLY
+	read -r REPLY || die "ввод закончился"
 }
 
 pick_iface() {
@@ -29,6 +31,7 @@ pick_iface() {
 	done
 }
 
+[ -f "$SRC/lib/common.sh" ] && [ -f "$SRC/bin/shin4static" ] || die "не найдены файлы Shin4Static рядом с install.sh ($SRC)"
 [ -d "$PREFIX" ] && [ -x "$PREFIX/bin/opkg" ] || die "нужен Entware в $PREFIX"
 
 [ -e "$PREFIX/etc/init.d/S02bird-table" ] &&
@@ -137,6 +140,7 @@ if ! grep -q '^WEB_LISTEN=..*' "$CONF"; then
 		if [ "$_mode" = local ]; then
 			while :; do
 				printf 'Пароль для входа (логин admin): '
+				trap 'stty echo 2>/dev/null' EXIT
 				stty -echo 2>/dev/null; read -r _pw; stty echo 2>/dev/null; echo
 				[ -n "$_pw" ] && break
 				say "Пароль не может быть пустым."
@@ -153,9 +157,14 @@ if ! grep -q '^WEB_LISTEN=..*' "$CONF"; then
 			grep -q '^WEB_USERS=..*' "$CONF" || set_conf WEB_USERS admin
 			say "Веб-интерфейс: http://${_lan%/*}:$_port/ — вход логином и паролем роутера (пользователи: WEB_USERS)."
 		else
-			say "Веб-интерфейс: http://${_lan%/*}:$_port/ (логин admin). Пароль сменить — удалите $AUTH и запустите install.sh."
+			say "Веб-интерфейс: http://${_lan%/*}:$_port/ (логин admin). Сменить пароль или режим входа — очистите WEB_LISTEN= в $CONF и запустите install.sh."
 		fi
 	fi
+fi
+# mod_access (WEB_ALLOW is enforced by lighttpd too) is built into newer
+# lighttpd and a separate package in older ones.
+if grep -q '^WEB_LISTEN=..*' "$CONF"; then
+	"$PREFIX/bin/opkg" install lighttpd-mod-access >/dev/null 2>&1
 fi
 
 cp "$SRC/etc/init.d/S02shin4static" "$PREFIX/etc/init.d/S02shin4static"

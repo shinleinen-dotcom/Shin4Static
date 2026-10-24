@@ -1,6 +1,7 @@
 "use strict";
 
 const M = window.S4SModel;
+const H = window.S4SHash;
 const API = "cgi-bin/s4s";
 const FILES = ["isp.list", "vpn1.list", "vpn2.list"];
 const PRIMARY = { "isp.list": 0, "vpn1.list": 1, "vpn2.list": 2 };
@@ -80,7 +81,16 @@ $("loginform").onsubmit = async (e) => {
 	const btn = e.target.querySelector("button");
 	btn.disabled = true;
 	try {
-		const r = await call("login", { body: `${user}\n${pass}` });
+		// The router's own scheme: only sha256(challenge + md5(login:realm:password))
+		// leaves the browser, never the password.
+		const c = await call("challenge");
+		if (!c.ok) {
+			showLogin(c.text.trim());
+			return;
+		}
+		const [id, realm, challenge] = c.text.split("\n");
+		const answer = H.sha256(challenge + H.md5(`${user}:${realm}:${pass}`));
+		const r = await call("login", { body: `${user}\n${id}\n${answer}` });
 		if (!r.ok) {
 			showLogin(r.text.trim());
 			return;
@@ -536,7 +546,9 @@ async function saveAll() {
 		if (!dirty(f)) continue;
 		let text;
 		text = f in st.raw ? st.raw[f] : M.serialize(st.blocks[f]).text;
-		const r = await call("save", { name: f, body: text });
+		// base: the version this page loaded; the router refuses the save if
+		// the file was changed since (another tab, SSH).
+		const r = await call("save", { name: f, body: text, params: { base: H.md5(st.saved[f]) } });
 		if (!r.ok) {
 			show("Сохранение", r.text, false);
 			return false;
@@ -549,10 +561,14 @@ async function saveAll() {
 
 async function run(action, title) {
 	if (!(await saveAll())) return;
+	// The list stays editable while the router works: keep what was changed
+	// meanwhile.
+	const before = Object.fromEntries(loaded().map((f) => [f, currentText(f)]));
 	const r = await call(action);
 	// Line numbers in messages refer to the files as saved: rebuild from them.
 	if (st.mode === "list") {
 		for (const f of loaded()) {
+			if (currentText(f) !== before[f]) continue;
 			st.blocks[f] = M.parseText(st.saved[f]);
 			st.lines[f] = st.blocks[f].lineMap;
 		}

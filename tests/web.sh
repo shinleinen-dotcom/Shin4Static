@@ -45,6 +45,9 @@ cat "$T/start.out"
 sleep 1
 check "started" "sh '$INIT' status | grep -q 'запущен (pid'"
 check "renamed copy runs" "[ -x '$R/share/shin4static/sbin/s4s-lighttpd' ]"
+check "login mode written for the CGI" "[ \"\$(cat '$R/var/shin4static/web.mode')\" = local ]"
+check "WEB_ALLOW enforced by lighttpd" "grep -qF '\$HTTP[\"remoteip\"] != \"127.0.0.0/8\"' '$R/etc/shin4static/lighttpd.conf' && grep -q 'url.access-deny' '$R/etc/shin4static/lighttpd.conf'"
+check "request size limited" "grep -q '^server.max-request-size = 300' '$R/etc/shin4static/lighttpd.conf'"
 
 # http METHOD PATH [USER:PASS] [BODY] -> $T/status, $T/headers, $T/body
 http() {
@@ -76,10 +79,14 @@ check "cgi runs" "[ \"\$(st)\" = 200 ] && grep -qx 1.2.3.4 '$T/body'"
 http GET '/cgi-bin/s4s?a=token' admin:secret
 TOK=$(cat "$T/body")
 check "token" "[ \${#TOK} = 32 ]"
-http POST "/cgi-bin/s4s?a=save&name=vpn1.list&t=$TOK" admin:secret '!KS0 5.6.7.8'
+BASE=$(md5sum < "$R/etc/shin4static/lists/vpn1.list" | cut -d' ' -f1)
+http POST "/cgi-bin/s4s?a=save&name=vpn1.list&base=$BASE&t=$TOK" admin:secret '!KS0 5.6.7.8'
 check "save through lighttpd" "grep -qx '!KS0 5.6.7.8' '$R/etc/shin4static/lists/vpn1.list'"
 http GET /cgi-bin/ admin:secret
 check "no directory listing" "! grep -qi 'index of' '$T/body'"
+BIG=$(head -c 400000 /dev/zero | tr '\0' x)
+http POST "/cgi-bin/s4s?a=save&name=vpn1.list&base=$BASE&t=$TOK" admin:secret "$BIG"
+check "huge body refused by lighttpd" "[ \"\$(st)\" = 413 ]"
 
 echo "== WEB_AUTH=router"
 sh "$INIT" stop
@@ -106,7 +113,10 @@ http GET /
 check "page loads without basic auth" "[ \"\$(st)\" = 200 ]"
 http GET '/cgi-bin/s4s?a=get&name=vpn1.list'
 check "data needs login" "grep -qi '^x-s4s-result: auth' '$T/headers' && ! grep -q 5.6.7.8 '$T/body'"
-http POST '/cgi-bin/s4s?a=login' '' $'admin\nsecret'
+http GET '/cgi-bin/s4s?a=challenge'
+ID=$(sed -n 1p "$T/body")
+HASH=$(printf '%s' "$(sed -n 3p "$T/body")$(printf '%s' "admin:$(sed -n 2p "$T/body"):secret" | md5sum | cut -d' ' -f1)" | sha256sum | cut -d' ' -f1)
+http POST '/cgi-bin/s4s?a=login' '' "$(printf 'admin\n%s\n%s' "$ID" "$HASH")"
 SID=$(sed -n 's/^[Ss]et-[Cc]ookie: s4s_session=\([0-9a-f]*\);.*/\1/p' "$T/headers" | tr -d '\r')
 check "login through lighttpd" "[ \${#SID} = 32 ]"
 COOKIE="s4s_session=$SID"
@@ -117,6 +127,7 @@ COOKIE=
 sh "$INIT" stop
 sleep 1
 check "stopped" "! sh '$INIT' status | grep -q 'запущен (pid'"
+check "login mode removed on stop" "[ ! -e '$R/var/shin4static/web.mode' ]"
 
 echo
 if [ "$FAILS" = 0 ]; then echo "Все тесты прошли"; else echo "Провалено: $FAILS"; exit 1; fi

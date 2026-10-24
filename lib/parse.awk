@@ -15,14 +15,21 @@ function trim(s) {
 	return s
 }
 
+# No leading zeros: iprange reads 010 as octal 8, so 010.0.0.0/8 would
+# silently become 8.0.0.0/8.
 function ipok(s,    n, a, i) {
 	n = split(s, a, ".")
 	if (n != 4)
 		return 0
 	for (i = 1; i <= 4; i++)
-		if (a[i] !~ /^[0-9]+$/ || length(a[i]) > 3 || a[i] + 0 > 255)
+		if (a[i] !~ /^(0|[1-9][0-9]?[0-9]?)$/ || a[i] + 0 > 255)
 			return 0
 	return 1
+}
+
+# Error text for a bad address: name the leading zero, it is not obvious.
+function ipbad(s, what) {
+	return s ~ /(^|[^0-9])0[0-9]/ ? what ": ведущий ноль в числе адреса (iprange прочтёт его как восьмеричное)" : what
 }
 
 function bad(msg) {
@@ -113,7 +120,7 @@ FNR == 1 {
 	if (line ~ /^[0-9.]+[ \t]*-[ \t]*[0-9.]+$/) {
 		split(line, r, /[ \t]*-[ \t]*/)
 		if (!ipok(r[1]) || !ipok(r[2])) {
-			bad("неверный диапазон адресов")
+			bad(ipbad(line, "неверный диапазон адресов"))
 			next
 		}
 		printf "R\t%s\trange\t%s - %s\t%s\n", group, r[1], r[2], where
@@ -123,7 +130,7 @@ FNR == 1 {
 	if (line ~ /^[0-9.]+\/[0-9]+$/) {
 		split(line, c, "/")
 		if (!ipok(c[1]) || c[2] + 0 > 32) {
-			bad("неверная подсеть")
+			bad(ipbad(c[1], "неверная подсеть"))
 			next
 		}
 		if (c[2] + 0 < 8)
@@ -142,7 +149,7 @@ FNR == 1 {
 
 	if (line ~ /^[0-9.]+$/) {
 		if (!ipok(line)) {
-			bad("неверный IPv4-адрес")
+			bad(ipbad(line, "неверный IPv4-адрес"))
 			next
 		}
 		printf "R\t%s\tip\t%s\t%s\n", group, line, where

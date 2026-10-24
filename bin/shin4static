@@ -1,6 +1,10 @@
 #!/bin/sh
 # Shin4Static: user-list routing through VPN with per-entry kill switch.
 
+# Entware first: the firmware has no readlink/dirname, and callers such as
+# the web CGI may give us no PATH at all.
+export PATH=/opt/bin:/opt/sbin:${PATH:-/sbin:/bin:/usr/sbin:/usr/bin}
+
 _self=$(readlink -f "$0")
 _base=$(dirname "$(dirname "$_self")")
 S4S_LIB=${S4S_LIB:-$_base/lib}
@@ -35,7 +39,23 @@ rule_pairs() {
 	echo "$PRIO_KS $TABLE_KS"
 }
 
+# Pairs set up last time: after TABLE_*/PRIO_* change in the config the old
+# rules and routes (kept by persist) must go too.
+APPLIED=$S4S_STATE/applied
+all_pairs() {
+	{ rule_pairs; cat "$APPLIED" 2>/dev/null; } | sort -u
+}
+
 rules_start() {
+	if [ -s "$APPLIED" ]; then
+		while read -r _prio _table; do
+			rule_pairs | grep -qx "$_prio $_table" && continue
+			info "номера изменились: убираю правило $_prio и таблицу $_table"
+			while "$IP" rule del table "$_table" priority "$_prio" 2>/dev/null; do :; done
+			"$IP" route flush table "$_table" 2>/dev/null
+		done < "$APPLIED"
+	fi
+	rule_pairs > "$APPLIED"
 	rule_pairs | while read -r _prio _table; do
 		_have=$("$IP" rule show | awk -v p="$_prio:" '$1 == p')
 		if [ -z "$_have" ]; then
@@ -47,21 +67,22 @@ rules_start() {
 }
 
 rules_stop() {
-	rule_pairs | while read -r _prio _table; do
+	all_pairs | while read -r _prio _table; do
 		while "$IP" rule del table "$_table" priority "$_prio" 2>/dev/null; do :; done
 	done
 }
 
 # Routes are kept in the kernel when BIRD stops (persist); remove them.
 routes_flush() {
-	rule_pairs | while read -r _prio _table; do
+	all_pairs | while read -r _prio _table; do
 		"$IP" route flush table "$_table" 2>/dev/null
 	done
+	rm -f "$APPLIED"
 }
 
 cmd_update() {
-	WORK=$(mktemp -d /tmp/shin4static.XXXXXX) || die "не удалось создать временный каталог"
 	lock_acquire
+	WORK=$(mktemp -d /tmp/shin4static.XXXXXX) || die "не удалось создать временный каталог"
 	[ "$DRY_RUN" = 1 ] || : > "$S4S_LOG"
 	generate "$WORK/gen"
 
@@ -74,7 +95,14 @@ cmd_update() {
 				"$(grep -c . "$_g")" "$(cat "$WORK/in/$_key.n" 2>/dev/null || echo 0)"
 		done
 	else
-		apply_generated "$WORK/gen"
+		# Lost rules or a crashed BIRD would quietly send everything,
+		# kill switch included, through the provider: repair them here.
+		rules_start
+		if ! bird_running; then
+			warn "BIRD Shin4Static не работал — запускаю"
+			(daemon_start)
+		fi
+		apply_generated "$WORK/gen" && save_groups
 	fi
 
 	[ "$ERRORS$WARNINGS" = 00 ] || info "ошибок: $ERRORS, предупреждений: $WARNINGS"
@@ -96,6 +124,15 @@ cmd_status() {
 		printf '  %s → таблица %s: %s, маршрутов: %s\n' "$_prio" "$_table" \
 			"$([ -n "$_rule" ] && echo 'правило есть' || echo 'ПРАВИЛА НЕТ')" "$_cnt"
 	done
+	# Rules checked before ours (Bird4Static, Keenetic policies) decide first:
+	# an address they catch never reaches our tables or the kill switch.
+	_before=$("$IP" rule show 2>/dev/null | awk -v p="$PRIO_STEP1" '
+		{ n = $1; sub(/:$/, "", n) }
+		n + 0 < p + 0 && / lookup / && !/ lookup (local|main|default)( |$)/')
+	if [ -n "$_before" ]; then
+		echo "Правила, которые проверяются раньше наших (их адреса не попадут в списки и kill switch):"
+		printf '%s\n' "$_before" | sed 's/^/  /'
+	fi
 	if bird_running; then
 		echo "BIRD Shin4Static (pid $(cat "$S4S_PIDFILE" 2>/dev/null)):"
 		s4s_birdc show protocols 2>/dev/null | grep 's4s_' | sed 's/^/  /'
@@ -143,20 +180,19 @@ case "$_cmd" in
 	check) load_config; DRY_RUN=1; cmd_update ;;
 	status) load_config; cmd_status ;;
 	why) load_config; cmd_why "$_arg" ;;
+	# Stopping and cleaning up work with a broken config too (uninstall).
 	rules)
-		load_config
 		case "$_arg" in
-			start) rules_start ;;
-			stop) rules_stop ;;
+			start) load_config; rules_start ;;
+			stop) load_config lenient; rules_stop ;;
 			*) usage; exit 1 ;;
 		esac ;;
 	daemon)
-		load_config
 		case "$_arg" in
-			start) daemon_start ;;
-			stop) daemon_stop ;;
+			start) load_config; daemon_start ;;
+			stop) load_config lenient; daemon_stop ;;
 			*) usage; exit 1 ;;
 		esac ;;
-	flush) load_config; routes_flush ;;
+	flush) load_config lenient; routes_flush ;;
 	*) usage; exit 1 ;;
 esac

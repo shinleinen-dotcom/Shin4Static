@@ -3,13 +3,20 @@
 # The system bird, /opt/etc/bird.conf and Bird4Static are not touched.
 
 PREFIX=/opt
+export PATH=$PREFIX/bin:$PREFIX/sbin:${PATH:-/sbin:/bin:/usr/sbin:/usr/bin}
 
 [ -x "$PREFIX/etc/init.d/S81shin4static-web" ] && "$PREFIX/etc/init.d/S81shin4static-web" stop
+# Works with a broken config too: defaults and the numbers applied last time.
 if [ -x "$PREFIX/bin/shin4static" ]; then
 	"$PREFIX/bin/shin4static" daemon stop
 	"$PREFIX/bin/shin4static" rules stop
 	"$PREFIX/bin/shin4static" flush
 fi
+# BIRD left without its control socket.
+_pid=$(cat "$PREFIX/var/run/shin4static-bird.pid" 2>/dev/null)
+[ -n "$_pid" ] && kill "$_pid" 2>/dev/null
+rm -f "$PREFIX/var/run/shin4static-bird.pid" "$PREFIX/var/run/shin4static-bird.ctl"
+
 
 rm -f "$PREFIX/etc/init.d/S02shin4static" "$PREFIX/etc/init.d/S81shin4static-web" \
 	"$PREFIX/etc/cron.hourly/shin4static" "$PREFIX/bin/shin4static"
