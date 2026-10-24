@@ -90,13 +90,21 @@ if [ -n "$_host" ]; then
 	esac
 fi
 
+# 32 random hex chars. The kernel's uuid needs no tools (Keenetic's busybox
+# has no od); od is the fallback.
 random_hex() {
-	head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'
+	_r=$(tr -d '-' < /proc/sys/kernel/random/uuid 2>/dev/null)
+	[ ${#_r} = 32 ] || _r=$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+	printf '%s' "$_r"
 }
 
-if [ ! -s "$TOKEN_FILE" ]; then
+TOKEN=
+[ -f "$TOKEN_FILE" ] && TOKEN=$(cat "$TOKEN_FILE")
+if [ ${#TOKEN} != 32 ]; then
 	mkdir -p "$(dirname "$TOKEN_FILE")"
-	random_hex > "$TOKEN_FILE"
+	TOKEN=$(random_hex)
+	[ ${#TOKEN} = 32 ] || fail "не удалось получить случайное значение для токена"
+	printf '%s' "$TOKEN" > "$TOKEN_FILE"
 fi
 
 sha256_hex() {
@@ -176,6 +184,7 @@ if [ "$WEB_AUTH" = router ]; then
 			0)
 				mkdir -p "$SESSIONS"
 				_sid=$(random_hex)
+				[ ${#_sid} = 32 ] || fail "не удалось создать сессию"
 				echo "$_user" > "$SESSIONS/$_sid"
 				HEADERS="Set-Cookie: $COOKIE=$_sid; Path=/; HttpOnly; SameSite=Strict"
 				reply ok
@@ -197,7 +206,7 @@ if [ "$WEB_AUTH" = router ]; then
 		exit 0
 	fi
 	if [ "$_a" = logout ]; then
-		[ "$REQUEST_METHOD" = POST ] && [ "$(param t)" = "$(cat "$TOKEN_FILE")" ] || fail "неверный запрос"
+		[ "$REQUEST_METHOD" = POST ] && [ "$(param t)" = "$TOKEN" ] || fail "неверный запрос"
 		rm -f "$SESSIONS/$(session_id)"
 		HEADERS="Set-Cookie: $COOKIE=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
 		reply ok
@@ -212,7 +221,7 @@ case "$_name" in
 esac
 
 if [ "$REQUEST_METHOD" = POST ]; then
-	[ "$(param t)" = "$(cat "$TOKEN_FILE")" ] || fail "неверный токен: обновите страницу"
+	[ "$(param t)" = "$TOKEN" ] || fail "неверный токен: обновите страницу"
 	case "$_a" in
 		save)
 			[ -n "$_name" ] || fail "не указан файл"
@@ -236,7 +245,7 @@ fi
 case "$_a" in
 	token)
 		reply ok
-		cat "$TOKEN_FILE"
+		echo "$TOKEN"
 		;;
 	info)
 		reply ok

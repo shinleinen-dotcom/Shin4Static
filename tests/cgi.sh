@@ -16,7 +16,7 @@ export S4S_ROOT=$T/opt
 mkdir -p "$S4S_ROOT/etc/shin4static/lists" "$S4S_ROOT/var/shin4static"
 printf 'ISP=ppp0\nVPN1=nwg0\nVPN2=\nWEB_HOSTS="my.keenetic.net"\nWEB_ALLOW="192.168.1.0/24"\nCURL_TIMEOUT=60\n' > "$S4S_ROOT/etc/shin4static/shin4static.conf"
 printf '1.2.3.4\n' > "$S4S_ROOT/etc/shin4static/lists/vpn1.list"
-printf '0123456789abcdef\n' > "$S4S_ROOT/var/shin4static/web.token"
+printf '0123456789abcdef0123456789abcdef' > "$S4S_ROOT/var/shin4static/web.token"
 cat > "$T/stub" <<'EOF'
 #!/bin/sh
 echo "stub $*"
@@ -25,7 +25,7 @@ exit 0
 EOF
 chmod +x "$T/stub"
 export S4S_BIN=$T/stub
-TOK=0123456789abcdef
+TOK=0123456789abcdef0123456789abcdef
 
 # req METHOD QUERY [BODY] [HOST] [CLIENT]
 req() {
@@ -49,6 +49,12 @@ check "localhost allowed" "[ \"\$(result)\" = ok ]"
 
 req GET 'a=token' '' '' ''
 check "unknown client refused" "[ \"\$(result)\" = error ]"
+
+: > "$S4S_ROOT/var/shin4static/web.token"
+req POST 'a=save&name=vpn1.list&t=' 'x'
+check "empty token never matches" "[ \"\$(result)\" = error ] && ! grep -qx x '$S4S_ROOT/etc/shin4static/lists/vpn1.list'"
+check "empty token file regenerated" "grep -qE '^[0-9a-f]{32}\$' '$S4S_ROOT/var/shin4static/web.token'"
+printf '%s' "$TOK" > "$S4S_ROOT/var/shin4static/web.token"
 
 req GET 'a=token'
 check "token readable" "[ \"\$(body)\" = $TOK ] && [ \"\$(result)\" = ok ]"
@@ -134,6 +140,7 @@ check "user outside WEB_USERS refused" "[ \"\$(result)\" = error ]"
 req POST 'a=login' "$(printf 'admin\nsecret')"
 SID=$(sed -n 's/^Set-Cookie: s4s_session=\([0-9a-f]*\);.*/\1/p' "$T/resp" | tr -d '\r')
 check "router password accepted" "[ \"\$(result)\" = ok ] && [ \${#SID} = 32 ]"
+check "session id is never empty" "! grep -q 's4s_session=;' '$T/resp'"
 check "cookie is HttpOnly and SameSite" "grep -q 'HttpOnly; SameSite=Strict' '$T/resp'"
 check "router session closed" "grep -qx delete '$T/router.log'"
 check "password not stored" "! grep -rq secret '$SESS'"
