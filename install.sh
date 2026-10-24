@@ -91,6 +91,10 @@ fi
 rm -rf "$SHARE/www"
 cp -r "$SRC/www" "$SHARE/"
 chmod +x "$SHARE/www/cgi-bin/s4s"
+# Version mark on the page's files: after an update the browser must not
+# keep the old style.css/app.js from its cache.
+_v=$(date +%s)
+sed -i -e "s/\(href=\"[a-z]*\.css\)\"/\1?v=$_v\"/" -e "s/\(src=\"[a-z]*\.js\)\"/\1?v=$_v\"/" "$SHARE/www/index.html"
 cp "$SRC/etc/init.d/S81shin4static-web" "$PREFIX/etc/init.d/S81shin4static-web"
 chmod +x "$PREFIX/etc/init.d/S81shin4static-web"
 

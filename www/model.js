@@ -4,6 +4,7 @@
 //   # block comment, one or more lines
 //   !KS0 AS13335  # entry note
 //   example.com
+//   #off 2ip.ru   <- disabled entry: kept, but a comment for the generator
 //                 <- blank line ends a block
 // A comment line after entries starts a new block.
 "use strict";
@@ -17,7 +18,7 @@
 	}
 
 	function newEntry(value = "") {
-		return { id: nid(), value, note: "", ks: false, fb: 0, rawTag: "", sel: false };
+		return { id: nid(), value, note: "", ks: false, fb: 0, rawTag: "", off: false, sel: false };
 	}
 
 	function parseEntry(line) {
@@ -60,6 +61,18 @@
 				cur = null;
 				continue;
 			}
+			const off = line.match(/^#off[ \t]+(\S.*)$/i);
+			if (off) {
+				if (!cur) {
+					cur = newBlock();
+					blocks.push(cur);
+				}
+				const e = parseEntry(off[1]);
+				e.off = true;
+				cur.entries.push(e);
+				lineMap[n] = { block: cur.id, entry: e.id };
+				continue;
+			}
 			if (/^[#;]/.test(line)) {
 				if (!cur || cur.entries.length) {
 					cur = newBlock();
@@ -93,7 +106,7 @@
 	function entryLine(e) {
 		const tag = tagOf(e);
 		const note = e.note.trim();
-		return (tag ? tag + " " : "") + e.value.trim() + (note ? "  # " + note : "");
+		return (e.off ? "#off " : "") + (tag ? tag + " " : "") + e.value.trim() + (note ? "  # " + note : "");
 	}
 
 	// Returns { text, lines } where lines[n] = { block, entry } for line n (1-based).

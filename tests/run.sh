@@ -190,6 +190,21 @@ s4s why 45.6.7.8 > "$T/out" 2>&1
 check "why: entry not applied yet" "grep -q 'ещё не применена' '$T/out'"
 sed -i '/^45.6.7.8$/d' "$L/vpn1.list"
 
+echo "== disabled entries (#off) stay in the list but are not routed"
+printf '#off !KS0 77.88.0.0/16  # пока не нужно\n' >> "$L/vpn1.list"
+s4s update > "$T/out" 2>&1
+check "disabled entry not routed" "! grep -q '77.88.0.0' '$GEN/step1.routes' && ! grep -q '77.88.0.0' '$GEN/ks.routes'"
+check "disabled entries counted" "grep -q 'отключённых записей (#off): 1' '$T/out'"
+check "no error for #off line" "! grep -q '77.88' '$T/out'"
+cp "$STATE/last.log" "$T/log.before"
+s4s why 77.88.1.1 > "$T/out" 2>&1
+cat "$T/out"
+check "why: disabled entry shown as such" "grep -q 'vpn1.list:19  #off !KS0 77.88.0.0/16  # пока не нужно  — отключена, не действует' '$T/out'"
+check "why: nothing active" "grep -q '^Действующих записей нет' '$T/out' && ! grep -q 'Внимание' '$T/out'"
+check "why: does not touch the update log" "cmp -s '$STATE/last.log' '$T/log.before'"
+sed -i '/^#off !KS0 77.88/d' "$L/vpn1.list"
+s4s update -q > /dev/null 2>&1
+
 echo "== AS sources down: cache used"
 touch "$T/curl.fail"
 s4s update > "$T/out" 2>&1

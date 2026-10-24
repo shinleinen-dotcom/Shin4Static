@@ -224,6 +224,12 @@ nav button.dirty::after { content: " ●"; color: var(--warn); }
 .ks input { width: 16px; height: 16px; accent-color: var(--error); }
 .reserve { font-size: 13px; }
 .sel { width: 16px; height: 16px; accent-color: var(--accent); }
+/* Disabled entry: kept in the file as "#off …", not routed. */
+.entry.off .value, .entry.off .note, .entry.off .badge, .entry.off .ks, .entry.off .reserve { opacity: .45; }
+.entry.off .value { text-decoration: line-through; }
+.onoff { padding: 2px 8px; font-size: 12px; min-width: 44px; border-color: transparent; background: transparent; color: var(--muted); }
+.onoff:hover { border-color: var(--line); color: inherit; }
+.entry.off .onoff { border-color: var(--accent); color: var(--accent); }
 .del { padding: 2px 8px; border-color: transparent; background: transparent; color: var(--muted); }
 .del:hover { color: var(--error); }
 

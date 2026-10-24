@@ -186,12 +186,21 @@ dev_name() {
 }
 
 # List entries containing the address, from the lists as they are now:
-# "<group>\t<file:line>" per entry. Domains and AS are checked against the
-# addresses and prefixes the last update got for them.
+# "<group>\t<file:line>\t<on|off>" per entry; off - disabled ("#off ...").
+# Domains and AS are checked against the addresses and prefixes the last
+# update got for them.
 find_entries() {
-	parse_lists 2>/dev/null | grep '^R	' > "$WORK/records"
+	parse_lists 2>/dev/null | grep '^R	' | sed 's/$/	on/' > "$WORK/records"
+	# Disabled entries: the same files with only the "#off" lines, uncommented,
+	# so that line numbers stay.
+	mkdir -p "$WORK/off"
+	for _f in "$S4S_LISTS"/*.list; do
+		[ -f "$_f" ] || continue
+		sed -e 's/^[[:blank:]]*#[Oo][Ff][Ff][[:blank:]][[:blank:]]*//;t' -e 's/.*//' "$_f" > "$WORK/off/${_f##*/}"
+	done
+	parse_lists "$WORK/off" 2>/dev/null | grep '^R	' | sed 's/$/	off/' >> "$WORK/records"
 	printf '%s\n' "$1" > "$WORK/ip"
-	while IFS='	' read -r _t _key _kind _val _where; do
+	while IFS='	' read -r _t _key _kind _val _where _state; do
 		case "$_kind" in
 			ip|range) printf '%s\n' "$_val" > "$WORK/v"; _src=$WORK/v ;;
 			domain) _src=$S4S_STATE/dns/$_val ;;
@@ -199,13 +208,13 @@ find_entries() {
 			*) continue ;;
 		esac
 		[ -s "$_src" ] || continue
-		[ -n "$("$IPRANGE" --common "$_src" "$WORK/ip" 2>/dev/null)" ] && printf '%s\t%s\n' "$_key" "$_where"
+		[ -n "$("$IPRANGE" --common "$_src" "$WORK/ip" 2>/dev/null)" ] && printf '%s\t%s\t%s\n' "$_key" "$_where" "$_state"
 	done < "$WORK/records"
 }
 
 # Text of the line file:line in the lists.
 entry_text() {
-	sed -n "${1##*:}p" "$S4S_LISTS/${1%:*}" | tr -d '\r' | sed 's/^[ \t]*//; s/[ \t]*$//'
+	sed -n "${1##*:}p" "$S4S_LISTS/${1%:*}" | tr -d '\r' | sed 's/^[[:blank:]]*//; s/[[:blank:]]*$//'
 }
 
 cmd_why() {
@@ -215,6 +224,8 @@ cmd_why() {
 	esac
 	WORK=$(mktemp -d /tmp/shin4static.XXXXXX) || die "не удалось создать временный каталог"
 	trap 'rm -rf "$WORK"' EXIT
+	# Read-only: keep the log of the last update as it is.
+	DRY_RUN=1
 
 	# The group the address belongs to in the routes applied now: after
 	# overlaps it is at most one.
@@ -227,25 +238,31 @@ cmd_why() {
 		fi
 	done
 	find_entries "$_ip" > "$WORK/found"
+	grep '	on$' "$WORK/found" > "$WORK/active"
 
 	echo "Адрес $_ip"
 	if [ -s "$WORK/found" ]; then
 		[ "$(grep -c . "$WORK/found")" = 1 ] && echo "Запись в списке:" || echo "Записи в списках:"
-		while IFS='	' read -r _key _where; do
+		while IFS='	' read -r _key _where _state; do
 			_note=
-			if [ -n "$_group" ] && [ "$_key" != "$_group" ] && grep -q "^$_group	" "$WORK/found"; then
+			if [ "$_state" = off ]; then
+				_note="  — отключена, не действует"
+			elif [ -n "$_group" ] && [ "$_key" != "$_group" ] && grep -q "^$_group	" "$WORK/active"; then
 				_note="  — не действует: адрес забрала более строгая запись"
 			fi
 			printf '  %s  %s%s\n' "$_where" "$(entry_text "$_where")" "$_note"
 		done < "$WORK/found"
-	else
+	fi
+	if [ ! -s "$WORK/found" ]; then
 		echo "В списках нет: обычная маршрутизация, через провайдера."
+	elif [ ! -s "$WORK/active" ]; then
+		echo "Действующих записей нет: обычная маршрутизация, через провайдера."
 	fi
 	if [ -n "$_group" ]; then
 		echo "Путь по записи: $(describe_path "$_group")."
-		grep -q "^$_group	" "$WORK/found" ||
+		grep -q "^$_group	" "$WORK/active" ||
 			echo "Внимание: применённые маршруты не совпадают со списками — нажмите «Применить» (shin4static update)."
-	elif [ -s "$WORK/found" ]; then
+	elif [ -s "$WORK/active" ]; then
 		echo "Внимание: запись есть, но ещё не применена — нажмите «Применить» (shin4static update)."
 	fi
 

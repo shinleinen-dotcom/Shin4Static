@@ -112,6 +112,22 @@ t("classify", () => {
 	);
 });
 
+t("disabled entries: #off line, kept with tags and notes", () => {
+	const text = "# Блок\n#off !KS0 AS13335  # офис\n2ip.ru\n#office — просто комментарий\n#off example.com\n";
+	const b = M.parseText(text);
+	assert.strictEqual(b[0].comment, "Блок");
+	const e = b[0].entries[0];
+	assert.deepStrictEqual([e.off, e.ks, e.fb, e.value, e.note], [true, true, 0, "AS13335", "офис"]);
+	assert.strictEqual(b[0].entries[1].off, false);
+	assert.strictEqual(b[1].comment, "office — просто комментарий");
+	assert.strictEqual(b[1].entries[0].off, true);
+	assert.strictEqual(M.serialize(b).text, "# Блок\n#off !KS0 AS13335  # офис\n2ip.ru\n\n# office — просто комментарий\n#off example.com\n");
+	b[0].entries[1].off = true;
+	b[0].entries[0].off = false;
+	assert.ok(M.serialize(b).text.startsWith("# Блок\n!KS0 AS13335  # офис\n#off 2ip.ru\n"));
+	assert.strictEqual(b.lineMap[2].entry, e.id);
+});
+
 t("leading zeros refused (iprange reads them as octal)", () => {
 	for (const v of ["010.20.30.0/24", "192.168.001.010", "1.2.3.4 - 1.2.3.09", "095.1.2.3"]) {
 		const r = M.classify(v);

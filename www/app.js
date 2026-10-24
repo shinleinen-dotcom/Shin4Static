@@ -237,7 +237,7 @@ function renderBlock(b, blocks) {
 				changed(false);
 			},
 		}),
-		h("span", { class: "count" }, `${entries.length}`),
+		h("span", { class: "count", title: "Записей (отключённых)" }, entries.some((e) => e.off) ? `${entries.length} (${entries.filter((e) => e.off).length} откл.)` : `${entries.length}`),
 		h("label", { class: "ks" }, blockKs, "KS"),
 		entries.length ? reserveSelect(fbState(entries), (ev) => {
 			entries.forEach((e) => (e.fb = Number(ev.target.value)));
@@ -294,7 +294,7 @@ function renderEntry(b, e) {
 		},
 	});
 
-	const row = h("div", { class: "entry" + (e.sel ? " selected" : "") + (problem ? " invalid" : ""), "data-entry": e.id },
+	const row = h("div", { class: "entry" + (e.sel ? " selected" : "") + (problem ? " invalid" : "") + (e.off ? " off" : ""), "data-entry": e.id },
 		sel,
 		h("span", { class: "vwrap" }, value, badge),
 		h("label", { class: "ks", title: "Kill switch: при отказе выхода — не через провайдера" }, ks, "KS"),
@@ -306,6 +306,13 @@ function renderEntry(b, e) {
 			"aria-label": "Заметка",
 			oninput: (ev) => { e.note = ev.target.value; changed(false); },
 		}),
+		h("button", {
+			type: "button",
+			class: "onoff",
+			"aria-pressed": String(!e.off),
+			title: e.off ? "Включить запись" : "Отключить запись: она остаётся в списке, но маршрут не ставится",
+			onclick: () => { e.off = !e.off; changed(); },
+		}, e.off ? "вкл" : "откл"),
 		h("button", { type: "button", class: "del", title: "Удалить запись", onclick: () => {
 			b.entries.splice(b.entries.indexOf(e), 1);
 			changed();
@@ -409,6 +416,8 @@ $("selmove").onchange = (ev) => {
 };
 $("selks").onclick = () => { selected().forEach((e) => (e.ks = true)); changed(); };
 $("selnoks").onclick = () => { selected().forEach((e) => (e.ks = false)); changed(); };
+$("seloff").onclick = () => { selected().forEach((e) => (e.off = true)); changed(); };
+$("selon").onclick = () => { selected().forEach((e) => (e.off = false)); changed(); };
 $("seldel").onclick = () => {
 	const n = selected().length;
 	if (!confirm(`Удалить ${n} записей?`)) return;

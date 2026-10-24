@@ -38,23 +38,29 @@ ipr() {
 		die "iprange $*: $(head -1 "$WORK/iprange.err") — маршруты не тронуты"
 }
 
+# parse_lists [dir]: the lists in $S4S_LISTS (or dir, same file names).
 parse_lists() {
+	_dir=${1:-$S4S_LISTS}
 	_files=
 	_prim=
 	for _f in isp:isp 1:vpn1 2:vpn2; do
 		_p=${_f%%:*}
 		_name=${_f#*:}.list
-		[ -f "$S4S_LISTS/$_name" ] || continue
+		[ -f "$_dir/$_name" ] || continue
 		if [ "$_p" = 2 ] && [ -z "$VPN2" ]; then
-			if grep -qvE '^[[:space:]]*([#;]|$)' "$S4S_LISTS/$_name"; then
+			if grep -qvE '^[[:space:]]*([#;]|$)' "$_dir/$_name"; then
 				warn "$_name не пуст, но VPN2 не настроен — список пропущен"
 			fi
 			continue
 		fi
-		_files="$_files $S4S_LISTS/$_name"
+		_files="$_files $_dir/$_name"
 		_prim="$_prim${_prim:+,}$_name=$_p"
 	done
 	[ -n "$_files" ] || return 0
+	# Disabled entries ("#off ...") are comments for the parser; just say so.
+	# shellcheck disable=SC2086
+	_off=$(cat $_files | grep -c '^[[:blank:]]*#[Oo][Ff][Ff][[:blank:]]')
+	[ "$_off" = 0 ] || info "отключённых записей (#off): $_off — не применяются"
 	# shellcheck disable=SC2086
 	awk -v PRIMARIES="$_prim" -v VPNS="$VPNS" -f "$S4S_LIB/parse.awk" $_files
 }
