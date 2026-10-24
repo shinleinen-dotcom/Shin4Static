@@ -145,22 +145,135 @@ cmd_status() {
 	fi
 }
 
+# Exit name for "через …": провайдера (eth3), VPN1 (nwg0).
+via_name() {
+	case "$1" in
+		isp) echo "провайдера ($ISP)" ;;
+		*) echo "VPN$1 ($(exit_iface "$1"))" ;;
+	esac
+}
+
+# The path a group key promises, as a sentence.
+describe_path() {
+	_p=${1%%.*}
+	_m=${1#*.}
+	_n=${_m#?}
+	_m=${_m%?}
+	_first=$(via_name "$_p")
+	case "$_m" in
+		N) if [ "$_p" = isp ]; then
+				echo "через $_first"
+			else
+				echo "через $_first; если он недоступен — через провайдера"
+			fi ;;
+		K) if [ "$_n" = 0 ]; then
+				echo "только через $_first; если он недоступен — блок (kill switch)"
+			else
+				echo "через $_first; если он недоступен — через $(via_name "$_n"); если и он недоступен — блок (kill switch)"
+			fi ;;
+		F) echo "через $_first; если он недоступен — через $(via_name "$_n"); если и он недоступен — через провайдера" ;;
+	esac
+}
+
+# Interface name -> "VPN1 (nwg0)" etc.
+dev_name() {
+	case "$1" in
+		"$VPN1") via_name 1 ;;
+		"$VPN2") [ -n "$VPN2" ] && via_name 2 || echo "$1" ;;
+		"$ISP") via_name isp ;;
+		*) echo "$1" ;;
+	esac
+}
+
+# List entries containing the address, from the lists as they are now:
+# "<group>\t<file:line>" per entry. Domains and AS are checked against the
+# addresses and prefixes the last update got for them.
+find_entries() {
+	parse_lists 2>/dev/null | grep '^R	' > "$WORK/records"
+	printf '%s\n' "$1" > "$WORK/ip"
+	while IFS='	' read -r _t _key _kind _val _where; do
+		case "$_kind" in
+			ip|range) printf '%s\n' "$_val" > "$WORK/v"; _src=$WORK/v ;;
+			domain) _src=$S4S_STATE/dns/$_val ;;
+			asn) _src=$S4S_STATE/asn/$_val ;;
+			*) continue ;;
+		esac
+		[ -s "$_src" ] || continue
+		[ -n "$("$IPRANGE" --common "$_src" "$WORK/ip" 2>/dev/null)" ] && printf '%s\t%s\n' "$_key" "$_where"
+	done < "$WORK/records"
+}
+
+# Text of the line file:line in the lists.
+entry_text() {
+	sed -n "${1##*:}p" "$S4S_LISTS/${1%:*}" | tr -d '\r' | sed 's/^[ \t]*//; s/[ \t]*$//'
+}
+
 cmd_why() {
 	_ip=$1
 	case "$_ip" in
 		*[!0-9.]*|'') die "укажите IPv4-адрес" ;;
 	esac
-	_found=0
+	WORK=$(mktemp -d /tmp/shin4static.XXXXXX) || die "не удалось создать временный каталог"
+	trap 'rm -rf "$WORK"' EXIT
+
+	# The group the address belongs to in the routes applied now: after
+	# overlaps it is at most one.
+	_group=
 	for _g in "$S4S_STATE"/groups/*; do
 		[ -s "$_g" ] || continue
 		if [ -n "$(printf '%s\n' "$_ip" | "$IPRANGE" --common - "$_g" 2>/dev/null)" ]; then
-			echo "входит в: $(describe_group "$(basename "$_g")")"
-			_found=1
+			_group=$(basename "$_g")
+			break
 		fi
 	done
-	[ "$_found" = 1 ] || echo "не входит ни в один список: идёт через провайдера"
-	echo "сейчас ядро выбирает:"
-	"$IP" route get "$_ip" 2>&1 | sed 's/^/  /'
+	find_entries "$_ip" > "$WORK/found"
+
+	echo "Адрес $_ip"
+	if [ -s "$WORK/found" ]; then
+		[ "$(grep -c . "$WORK/found")" = 1 ] && echo "Запись в списке:" || echo "Записи в списках:"
+		while IFS='	' read -r _key _where; do
+			_note=
+			if [ -n "$_group" ] && [ "$_key" != "$_group" ] && grep -q "^$_group	" "$WORK/found"; then
+				_note="  — не действует: адрес забрала более строгая запись"
+			fi
+			printf '  %s  %s%s\n' "$_where" "$(entry_text "$_where")" "$_note"
+		done < "$WORK/found"
+	else
+		echo "В списках нет: обычная маршрутизация, через провайдера."
+	fi
+	if [ -n "$_group" ]; then
+		echo "Путь по записи: $(describe_path "$_group")."
+		grep -q "^$_group	" "$WORK/found" ||
+			echo "Внимание: применённые маршруты не совпадают со списками — нажмите «Применить» (shin4static update)."
+	elif [ -s "$WORK/found" ]; then
+		echo "Внимание: запись есть, но ещё не применена — нажмите «Применить» (shin4static update)."
+	fi
+
+	# What the kernel does right now.
+	_route=$("$IP" route get "$_ip" 2>&1 | head -1)
+	_dev=$(printf '%s\n' "$_route" | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+	_table=$(printf '%s\n' "$_route" | sed -n 's/.* table \([^ ]*\).*/\1/p')
+	case "$_route" in
+		*nreachable*|*prohibit*|*blackhole*) _table=$TABLE_KS ;;
+	esac
+	case "$_table" in
+		"$TABLE_STEP1") _now="через $(dev_name "$_dev") — основной путь" ;;
+		"$TABLE_STEP2") _now="через $(dev_name "$_dev") — резервный путь, основной выход недоступен" ;;
+		"$TABLE_KS") _now="заблокирован (kill switch): все выходы этой записи недоступны" ;;
+		''|main|254)
+			if [ -z "$_dev" ]; then
+				_now="ядро не нашло маршрут: $_route"
+			elif [ -n "$_group" ] && [ "${_group%%.*}" != isp ]; then
+				_now="через $(dev_name "$_dev") — VPN этой записи недоступен, обычная маршрутизация"
+			else
+				_now="через $(dev_name "$_dev") — обычная маршрутизация"
+			fi ;;
+		*)
+			_rule=$("$IP" rule show 2>/dev/null | grep -E "lookup $_table( |\$)" | head -1)
+			_now="через $(dev_name "$_dev") по чужому правилу (таблица $_table), оно проверяется раньше наших: ${_rule:-см. ip rule}" ;;
+	esac
+	echo "Сейчас: $_now."
+	echo "Для диагностики: $_route"
 }
 
 DRY_RUN=0

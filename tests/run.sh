@@ -68,6 +68,7 @@ case "\$*" in
 	"route show") [ -e "$T/nogw" ] || echo "default via 192.0.2.1 dev eth3" ;;
 	"rule del"*) exit 1 ;;
 	"rule show") [ -e "$T/rules" ] && cat "$T/rules" ;;
+	"route get "*) if [ -e "$T/route" ]; then cat "$T/route"; else echo "\$3 dev nwg0 table 1031 src 10.8.1.5"; fi ;;
 esac
 exit 0
 EOF
@@ -160,8 +161,34 @@ check "says unchanged" "grep -q 'не изменились' '$T/out'"
 
 echo "== why"
 s4s why 198.51.100.11 > "$T/out" 2>&1
-check "why names the KS0 group" "grep -qx 'входит в: VPN1(nwg0) → блок' '$T/out'"
-check "why: one group only after overlaps" "[ \$(grep -c '^входит в' '$T/out') = 1 ]"
+cat "$T/out"
+check "why: both entries with their lines" "grep -q '^  vpn1.list:2  198.51.0.0/16' '$T/out' && grep -q '^  vpn1.list:3  !KS0 198.51.100.0/24\$' '$T/out'"
+check "why: the wider untagged entry marked as not acting" "grep 'vpn1.list:2 ' '$T/out' | grep -q 'не действует'"
+check "why: path of the KS0 entry" "grep -qx 'Путь по записи: только через VPN1 (nwg0); если он недоступен — блок (kill switch).' '$T/out'"
+check "why: current path in words" "grep -qx 'Сейчас: через VPN1 (nwg0) — основной путь.' '$T/out'"
+check "why: no stale warning" "! grep -q 'Внимание' '$T/out'"
+s4s why 93.184.216.5 > "$T/out" 2>&1
+check "why: AS entry found by its prefixes" "grep -q '^  vpn1.list:4  !ks0 as13335$' '$T/out'"
+s4s why 1.1.1.1 > "$T/out" 2>&1
+check "why: domain entry found by its addresses" "grep -q 'vpn1.list:5  one.one.one.one' '$T/out'"
+printf '5.5.5.5 dev eth3 src 192.0.2.10\n' > "$T/route"
+s4s why 5.5.5.5 > "$T/out" 2>&1
+check "why: not in lists" "grep -q '^В списках нет' '$T/out' && grep -qx 'Сейчас: через провайдера (eth3) — обычная маршрутизация.' '$T/out'"
+printf '198.51.100.11 dev eth3 src 192.0.2.10\n' > "$T/route"
+s4s why 198.51.100.11 > "$T/out" 2>&1
+check "why: VPN down, untagged would go to provider" "grep -q 'Сейчас: через провайдера (eth3)' '$T/out'"
+printf 'RTNETLINK answers: Network is unreachable\n' > "$T/route"
+s4s why 198.51.100.11 > "$T/out" 2>&1
+check "why: kill switch in words" "grep -q 'Сейчас: заблокирован (kill switch)' '$T/out'"
+printf '198.51.100.11 dev nwg0 table 1020 src 10.8.1.5\n' > "$T/route"
+printf '30020:\tfrom all lookup 1020\n' > "$T/rules"
+s4s why 198.51.100.11 > "$T/out" 2>&1
+check "why: foreign rule named" "grep -q 'по чужому правилу (таблица 1020).*30020' '$T/out'"
+rm -f "$T/route" "$T/rules"
+printf '45.6.7.8\n' >> "$L/vpn1.list"
+s4s why 45.6.7.8 > "$T/out" 2>&1
+check "why: entry not applied yet" "grep -q 'ещё не применена' '$T/out'"
+sed -i '/^45.6.7.8$/d' "$L/vpn1.list"
 
 echo "== AS sources down: cache used"
 touch "$T/curl.fail"

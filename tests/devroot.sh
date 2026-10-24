@@ -47,7 +47,10 @@ printf '!KS1 8.8.8.8\n' > "$R/etc/shin4static/lists/vpn2.list"
 
 cat > "$D/mock/curl" <<'EOF'
 #!/bin/sh
-echo '{"prefixes":["104.16.0.0/13","172.64.0.0/13","10.0.0.0/8"]}'
+# The AS answer goes to the -o file, as with the real curl.
+o=/dev/stdout
+while [ $# -gt 0 ]; do [ "$1" = -o ] && { o=$2; shift; }; shift; done
+echo '{"prefixes":["104.16.0.0/13","172.64.0.0/13","10.0.0.0/8"]}' > "$o"
 EOF
 cat > "$D/mock/birdc" <<'EOF'
 #!/bin/sh
