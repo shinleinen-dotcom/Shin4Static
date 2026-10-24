@@ -100,9 +100,10 @@ set_conf() {
 	fi
 }
 
-# Web interface: own lighttpd instance, password in htdigest format.
+# Web interface: own lighttpd instance. Password: the router's web interface
+# account (checked by the CGI through the router's /auth) or its own one.
 AUTH=$ETC/web.htdigest
-if [ ! -s "$AUTH" ]; then
+if ! grep -q '^WEB_LISTEN=..*' "$CONF"; then
 	ask "Включить веб-интерфейс (lighttpd)? Y/n"
 	if [ "$REPLY" != n ]; then
 		_had_lighttpd=$("$PREFIX/bin/opkg" list-installed | grep -c '^lighttpd ')
@@ -120,19 +121,40 @@ if [ ! -s "$AUTH" ]; then
 		ask "Порт (Enter — 8088):"
 		_port=${REPLY:-8088}
 		case "$_port" in ''|*[!0-9]*) die "порт должен быть числом" ;; esac
-		while :; do
-			printf 'Пароль для входа (логин admin): '
-			stty -echo 2>/dev/null; read -r _pw; stty echo 2>/dev/null; echo
-			[ -n "$_pw" ] && break
-			say "Пароль не может быть пустым."
-		done
-		_md5=$(printf '%s' "admin:Shin4Static:$_pw" | md5sum | cut -d' ' -f1)
-		umask 077
-		echo "admin:Shin4Static:$_md5" > "$AUTH"
-		umask 022
+
+		ask "Пароль: 1 — как у веб-интерфейса роутера (Enter), 2 — отдельный:"
+		_mode=router
+		[ "$REPLY" = 2 ] && _mode=local
+		if [ "$_mode" = router ]; then
+			if ! curl -s -m 5 -D - -o /dev/null "http://${_lan%/*}/auth" | grep -qi '^x-ndm-challenge:'; then
+				say "Роутер не отвечает на http://${_lan%/*}/auth как ожидается — будет отдельный пароль."
+				_mode=local
+			elif ! command -v sha256sum >/dev/null 2>&1 && ! command -v openssl >/dev/null 2>&1; then
+				say "Нет sha256sum и openssl — будет отдельный пароль."
+				_mode=local
+			fi
+		fi
+		if [ "$_mode" = local ]; then
+			while :; do
+				printf 'Пароль для входа (логин admin): '
+				stty -echo 2>/dev/null; read -r _pw; stty echo 2>/dev/null; echo
+				[ -n "$_pw" ] && break
+				say "Пароль не может быть пустым."
+			done
+			_md5=$(printf '%s' "admin:Shin4Static:$_pw" | md5sum | cut -d' ' -f1)
+			umask 077
+			echo "admin:Shin4Static:$_md5" > "$AUTH"
+			umask 022
+		fi
 		set_conf WEB_LISTEN "${_lan%/*}:$_port"
 		set_conf WEB_ALLOW "\"$_lan\""
-		say "Веб-интерфейс: http://${_lan%/*}:$_port/ (логин admin). Пароль сменить — удалите $AUTH и запустите install.sh."
+		set_conf WEB_AUTH "$_mode"
+		if [ "$_mode" = router ]; then
+			grep -q '^WEB_USERS=..*' "$CONF" || set_conf WEB_USERS admin
+			say "Веб-интерфейс: http://${_lan%/*}:$_port/ — вход логином и паролем роутера (пользователи: WEB_USERS)."
+		else
+			say "Веб-интерфейс: http://${_lan%/*}:$_port/ (логин admin). Пароль сменить — удалите $AUTH и запустите install.sh."
+		fi
 	fi
 fi
 

@@ -39,20 +39,72 @@ function h(tag, props, ...kids) {
 
 // ---------- API ----------
 
+// Thrown when the session is missing or expired; the login form is shown.
+class AuthNeeded extends Error {}
+
 async function call(action, { name, body, params } = {}) {
 	const q = new URLSearchParams({ a: action, ...(params || {}) });
 	if (name) q.set("name", name);
-	const post = ["save", "check", "apply"].includes(action);
-	if (post) q.set("t", st.token);
+	const post = ["save", "check", "apply", "login", "logout"].includes(action);
+	if (post && action !== "login") q.set("t", st.token);
 	const res = await fetch(`${API}?${q}`, {
 		method: post ? "POST" : "GET",
 		body: post ? (body ?? " ") : undefined,
 		headers: post ? { "Content-Type": "text/plain; charset=utf-8" } : undefined,
 		cache: "no-store",
+		credentials: "same-origin",
 	});
 	const text = await res.text();
-	return { ok: res.ok && res.headers.get("X-S4S-Result") === "ok", text };
+	const result = res.headers.get("X-S4S-Result");
+	if (result === "auth") {
+		showLogin();
+		throw new AuthNeeded();
+	}
+	return { ok: res.ok && result === "ok", text };
 }
+
+// ---------- login (WEB_AUTH=router) ----------
+
+function showLogin(message) {
+	$("login").hidden = false;
+	$("loginerr").hidden = !message;
+	$("loginerr").textContent = message || "";
+	$("loginpass").value = "";
+	$("loginpass").focus();
+}
+
+$("loginform").onsubmit = async (e) => {
+	e.preventDefault();
+	const user = $("loginuser").value.trim();
+	const pass = $("loginpass").value;
+	const btn = e.target.querySelector("button");
+	btn.disabled = true;
+	try {
+		const r = await call("login", { body: `${user}\n${pass}` });
+		if (!r.ok) {
+			showLogin(r.text.trim());
+			return;
+		}
+		$("login").hidden = true;
+		// After an expired session keep the unsaved edits: only renew the token.
+		if (loaded().length) {
+			st.token = (await call("token")).text.trim();
+		} else {
+			await busy(load);
+		}
+	} catch (err) {
+		if (!(err instanceof AuthNeeded)) showLogin(String(err));
+	} finally {
+		btn.disabled = false;
+	}
+};
+
+$("logout").onclick = () =>
+	busy(async () => {
+		if (loaded().some(dirty) && !confirm("Есть несохранённые изменения. Выйти без сохранения?")) return;
+		await call("logout");
+		location.reload();
+	});
 
 // ---------- file state ----------
 
@@ -468,7 +520,7 @@ async function busy(fn) {
 	try {
 		await fn();
 	} catch (e) {
-		show("Ошибка связи", String(e), false);
+		if (!(e instanceof AuthNeeded)) show("Ошибка связи", String(e), false);
 	} finally {
 		$("busy").hidden = true;
 		buttons.forEach((b) => (b.disabled = false));
@@ -521,6 +573,7 @@ async function load() {
 		const [k, ...v] = line.split("=");
 		if (k) st.info[k.trim()] = v.join("=").trim();
 	}
+	$("logout").hidden = st.info.WEB_AUTH !== "router";
 	for (const f of FILES) {
 		if (f === "vpn2.list" && !st.info.VPN2) continue;
 		const r = await call("get", { name: f });

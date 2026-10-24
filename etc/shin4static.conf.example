@@ -34,3 +34,11 @@ DNS_WAIT=120
 WEB_LISTEN=
 WEB_ALLOW=
 WEB_HOSTS=
+# Password: "router" - the account of the router's web interface (checked via
+# ROUTER_URL/auth; empty ROUTER_URL - http://<address from WEB_LISTEN>), only
+# for users in WEB_USERS; "local" - own password in web.htdigest.
+WEB_AUTH=
+WEB_USERS=admin
+ROUTER_URL=
+# Idle session lifetime for WEB_AUTH=router, seconds.
+WEB_SESSION_TTL=43200

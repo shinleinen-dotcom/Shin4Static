@@ -10,19 +10,30 @@
 #   POST ?a=save&name=…&t=TOKEN    body = new list contents
 #   POST ?a=check&t=TOKEN          shin4static check
 #   POST ?a=apply&t=TOKEN          shin4static update
+#
+# With WEB_AUTH=router (password of the router's web interface):
+#   POST ?a=login                  body = "login\npassword", sets a session cookie
+#   POST ?a=logout&t=TOKEN
+# Every other action then needs the session; without it the answer is
+# X-S4S-Result: auth. With WEB_AUTH=local lighttpd asks for its own password.
 
 PATH=/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin
 S4S_ROOT=${S4S_ROOT:-/opt}
 S4S_BIN=${S4S_BIN:-shin4static}
+CURL=${CURL:-curl}
 LISTS=$S4S_ROOT/etc/shin4static/lists
 CONF=$S4S_ROOT/etc/shin4static/shin4static.conf
 TOKEN_FILE=$S4S_ROOT/var/shin4static/web.token
+SESSIONS=$S4S_ROOT/var/shin4static/web-sessions
 MAX_BODY=262144
+COOKIE=s4s_session
+HEADERS=
 
 reply() {
 	printf 'Content-Type: text/plain; charset=utf-8\r\n'
 	printf 'Cache-Control: no-store\r\n'
 	printf 'X-Content-Type-Options: nosniff\r\n'
+	[ -n "$HEADERS" ] && printf '%s\r\n' "$HEADERS"
 	printf 'X-S4S-Result: %s\r\n\r\n' "$1"
 }
 
@@ -79,12 +90,121 @@ if [ -n "$_host" ]; then
 	esac
 fi
 
+random_hex() {
+	head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
+
 if [ ! -s "$TOKEN_FILE" ]; then
 	mkdir -p "$(dirname "$TOKEN_FILE")"
-	head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TOKEN_FILE"
+	random_hex > "$TOKEN_FILE"
 fi
 
+sha256_hex() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum | cut -d' ' -f1
+	else
+		openssl dgst -sha256 -r | cut -d' ' -f1
+	fi
+}
+
+# Check login/password against the router's web interface (NDM /auth):
+# GET gives realm and challenge, POST sha256(challenge + md5(login:realm:pw)).
+# Returns 0 - accepted, 1 - rejected, 2 - router did not answer as expected.
+router_auth() {
+	_url=$(conf_value ROUTER_URL)
+	[ -n "$_url" ] || _url="http://$(conf_value WEB_LISTEN | sed 's/:.*//')"
+	_jar=$(mktemp /tmp/s4s-auth.XXXXXX) || return 2
+	_hdr=$("$CURL" -s -m 10 -c "$_jar" -D - -o /dev/null "$_url/auth" | tr -d '\r')
+	_realm=$(printf '%s\n' "$_hdr" | sed -n 's/^[Xx]-[Nn][Dd][Mm]-[Rr][Ee][Aa][Ll][Mm]: *//p' | head -1)
+	_chal=$(printf '%s\n' "$_hdr" | sed -n 's/^[Xx]-[Nn][Dd][Mm]-[Cc][Hh][Aa][Ll][Ll][Ee][Nn][Gg][Ee]: *//p' | head -1)
+	if [ -z "$_realm" ] || [ -z "$_chal" ]; then
+		rm -f "$_jar"
+		return 2
+	fi
+	_md5=$(printf '%s' "$1:$_realm:$2" | md5sum | cut -d' ' -f1)
+	_sha=$(printf '%s' "$_chal$_md5" | sha256_hex)
+	_code=$(printf '{"login":"%s","password":"%s"}' "$1" "$_sha" |
+		"$CURL" -s -m 10 -b "$_jar" -c "$_jar" -o /dev/null -w '%{http_code}' \
+			-H 'Content-Type: application/json' --data-binary @- "$_url/auth")
+	# Do not leave an open session on the router.
+	[ "$_code" = 200 ] && "$CURL" -s -m 5 -b "$_jar" -X DELETE -o /dev/null "$_url/auth"
+	rm -f "$_jar"
+	[ "$_code" = 200 ]
+}
+
+session_id() {
+	printf '%s' "$HTTP_COOKIE" | tr ';' '\n' | sed -n "s/^ *$COOKIE=\([0-9a-f]\{32\}\)$/\1/p" | head -1
+}
+
+# Valid if the session file exists and was used within WEB_SESSION_TTL.
+session_valid() {
+	_sid=$(session_id)
+	[ -n "$_sid" ] && [ -f "$SESSIONS/$_sid" ] || return 1
+	_ttl=$(conf_value WEB_SESSION_TTL)
+	case "$_ttl" in ''|*[!0-9]*) _ttl=43200 ;; esac
+	if [ $(($(date +%s) - $(date -r "$SESSIONS/$_sid" +%s))) -ge "$_ttl" ]; then
+		rm -f "$SESSIONS/$_sid"
+		return 1
+	fi
+	touch "$SESSIONS/$_sid"
+}
+
 _a=$(param a)
+
+WEB_AUTH=$(conf_value WEB_AUTH)
+if [ "$WEB_AUTH" = router ]; then
+	if [ "$_a" = login ]; then
+		[ "$REQUEST_METHOD" = POST ] || fail "вход только через POST"
+		case "$CONTENT_LENGTH" in ''|*[!0-9]*) fail "нет данных" ;; esac
+		[ "$CONTENT_LENGTH" -le 1024 ] || fail "слишком длинные данные"
+		_body=$(head -c "$CONTENT_LENGTH" | tr -d '\r')
+		_user=$(printf '%s\n' "$_body" | head -1)
+		_pass=$(printf '%s\n' "$_body" | sed '1d')
+		_users=$(conf_value WEB_USERS)
+		case "$_user" in ''|*[!A-Za-z0-9_.-]*) _user= ;; esac
+		case " ${_users:-admin} " in
+			*" $_user "*) ;;
+			*) _user= ;;
+		esac
+		if [ -n "$_user" ] && [ -n "$_pass" ]; then
+			router_auth "$_user" "$_pass"
+			_rc=$?
+		else
+			_rc=1
+		fi
+		case "$_rc" in
+			0)
+				mkdir -p "$SESSIONS"
+				_sid=$(random_hex)
+				echo "$_user" > "$SESSIONS/$_sid"
+				HEADERS="Set-Cookie: $COOKIE=$_sid; Path=/; HttpOnly; SameSite=Strict"
+				reply ok
+				echo "вход: $_user"
+				;;
+			2)
+				fail "роутер не ответил на проверку пароля (ROUTER_URL в shin4static.conf)"
+				;;
+			*)
+				sleep 2
+				fail "неверный логин или пароль"
+				;;
+		esac
+		exit 0
+	fi
+	if ! session_valid; then
+		reply auth
+		echo "нужен вход"
+		exit 0
+	fi
+	if [ "$_a" = logout ]; then
+		[ "$REQUEST_METHOD" = POST ] && [ "$(param t)" = "$(cat "$TOKEN_FILE")" ] || fail "неверный запрос"
+		rm -f "$SESSIONS/$(session_id)"
+		HEADERS="Set-Cookie: $COOKIE=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+		reply ok
+		echo "выход"
+		exit 0
+	fi
+fi
 _name=$(param name)
 case "$_name" in
 	''|isp.list|vpn1.list|vpn2.list) ;;
@@ -120,7 +240,7 @@ case "$_a" in
 		;;
 	info)
 		reply ok
-		grep -E '^(ISP|VPN1|VPN2)=' "$CONF" 2>/dev/null | tr -d '"'"'"
+		grep -E '^(ISP|VPN1|VPN2|WEB_AUTH)=' "$CONF" 2>/dev/null | tr -d '"'"'"
 		;;
 	get)
 		[ -n "$_name" ] || fail "не указан файл"

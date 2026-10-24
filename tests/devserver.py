@@ -13,7 +13,8 @@ import urllib.parse
 REPO = pathlib.Path(__file__).resolve().parent.parent
 WWW = REPO / "www"
 WSL_CGI = "/mnt/" + str(REPO / "www/cgi-bin/s4s").replace(":", "").replace("\\", "/").lower()
-ENV = {"S4S_ROOT": "/tmp/s4s-dev/opt", "S4S_BIN": "/tmp/s4s-dev/s4s", "REMOTE_ADDR": "127.0.0.1"}
+ENV = {"S4S_ROOT": "/tmp/s4s-dev/opt", "S4S_BIN": "/tmp/s4s-dev/s4s", "REMOTE_ADDR": "127.0.0.1",
+       "CURL": "/tmp/s4s-dev/mock/kcurl"}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -32,7 +33,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def cgi(self, body):
         query = urllib.parse.urlsplit(self.path).query
         env = dict(ENV, REQUEST_METHOD=self.command, QUERY_STRING=query,
-                   CONTENT_LENGTH=str(len(body)), HTTP_HOST=self.headers.get("Host", ""))
+                   CONTENT_LENGTH=str(len(body)), HTTP_HOST=self.headers.get("Host", ""),
+                   HTTP_COOKIE=self.headers.get("Cookie", ""))
         # wsl.exe hands the command to a shell: quote everything.
         cmd = ["wsl.exe", "-d", "Debian", "--", "env"] + [shlex.quote(f"{k}={v}") for k, v in env.items()] + ["sh", WSL_CGI]
         out = subprocess.run(cmd, input=body, capture_output=True).stdout

@@ -16,8 +16,20 @@
 		<button id="check">Проверить</button>
 		<button id="apply" class="primary">Применить</button>
 		<button id="status">Состояние</button>
+		<button id="logout" hidden>Выйти</button>
 	</div>
 </header>
+
+<div id="login" class="login" hidden>
+	<form id="loginform" class="loginbox">
+		<h2>Вход</h2>
+		<p>Логин и пароль от веб-интерфейса роутера.</p>
+		<input id="loginuser" autocomplete="username" value="admin" aria-label="Логин">
+		<input id="loginpass" type="password" autocomplete="current-password" placeholder="Пароль" aria-label="Пароль">
+		<div id="loginerr" class="loginerr" hidden></div>
+		<button class="primary">Войти</button>
+	</form>
+</div>
 
 <main>
 	<section class="editor">

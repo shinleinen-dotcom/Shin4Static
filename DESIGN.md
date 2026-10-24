@@ -139,6 +139,15 @@ CGI на sh (`www/cgi-bin/s4s`) и одна страница без внешни
 прошивки). Если lighttpd ставится только ради Shin4Static, автозапуск
 стандартного выключается. busybox httpd на Keenetic нет.
 
-Пароль хранится в формате htdigest (`md5(admin:Shin4Static:пароль)`): его
-можно получить `md5sum`, без openssl; lighttpd принимает такой файл и для
-Basic-авторизации.
+Вход, `WEB_AUTH=router`: пароль от веб-интерфейса роутера. CGI повторяет то,
+что делает страница входа Keenetic: `GET /auth` даёт `X-NDM-Realm` и
+`X-NDM-Challenge`, `POST /auth` с `sha256(challenge + md5(логин:realm:пароль))`
+отвечает 200 при верном пароле; сессия на роутере сразу закрывается
+(`DELETE /auth`). Дальше — своя сессия: случайный id в cookie (`HttpOnly`,
+`SameSite=Strict`), файл в `/opt/var/shin4static/web-sessions/`, срок по
+бездействию. Пароль нигде не сохраняется. lighttpd в этом режиме без mod_auth:
+страница открыта, данные отдаёт только CGI с сессией.
+
+`WEB_AUTH=local`: свой пароль в формате htdigest
+(`md5(admin:Shin4Static:пароль)`, получается `md5sum`, без openssl); lighttpd
+принимает такой файл и для Basic-авторизации.

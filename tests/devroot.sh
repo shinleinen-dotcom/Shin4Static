@@ -15,6 +15,21 @@ ISP_GW=auto
 VPN1=nwg0
 VPN2=nwg1
 DNS_WAIT=5
+WEB_AUTH=router
+WEB_USERS=admin
+ROUTER_URL=http://router
+EOF
+# Mocked Keenetic /auth: login admin, password "secret".
+cat > "$D/mock/kcurl" <<'EOF'
+#!/bin/sh
+case " $* " in
+	*" -X DELETE "*) exit 0 ;;
+	*" --data-binary "*)
+		want=$(printf '%s' "ABC123$(printf '%s' 'admin:Keenetic Dev:secret' | md5sum | cut -d' ' -f1)" | sha256sum | cut -d' ' -f1)
+		[ "$(cat | sed -n 's/.*"password":"\([0-9a-f]*\)".*/\1/p')" = "$want" ] && printf 200 || printf 401
+		exit 0 ;;
+esac
+printf 'HTTP/1.1 401 Unauthorized\r\nX-NDM-Realm: Keenetic Dev\r\nX-NDM-Challenge: ABC123\r\n\r\n'
 EOF
 printf '# VPN-сервер\n203.0.113.7\n' > "$R/etc/shin4static/lists/isp.list"
 cat > "$R/etc/shin4static/lists/vpn1.list" <<'EOF'

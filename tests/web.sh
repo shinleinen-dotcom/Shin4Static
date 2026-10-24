@@ -50,6 +50,7 @@ check "renamed copy runs" "[ -x '$R/share/shin4static/sbin/s4s-lighttpd' ]"
 http() {
 	local auth=""
 	[ -n "$3" ] && auth="Authorization: Basic $(printf '%s' "$3" | base64)"$'\r\n'
+	[ -n "$COOKIE" ] && auth="${auth}Cookie: $COOKIE"$'\r\n'
 	exec 3<>"/dev/tcp/127.0.0.1/$PORT" || return 1
 	printf '%s %s HTTP/1.0\r\nHost: 127.0.0.1:%s\r\n%sContent-Type: text/plain\r\nContent-Length: %s\r\n\r\n%s' \
 		"$1" "$2" "$PORT" "$auth" "${#4}" "$4" >&3
@@ -79,6 +80,39 @@ http POST "/cgi-bin/s4s?a=save&name=vpn1.list&t=$TOK" admin:secret '!KS0 5.6.7.8
 check "save through lighttpd" "grep -qx '!KS0 5.6.7.8' '$R/etc/shin4static/lists/vpn1.list'"
 http GET /cgi-bin/ admin:secret
 check "no directory listing" "! grep -qi 'index of' '$T/body'"
+
+echo "== WEB_AUTH=router"
+sh "$INIT" stop
+sleep 1
+cat > "$T/kcurl" <<EOF
+#!/bin/sh
+case " \$* " in
+	*" -X DELETE "*) exit 0 ;;
+	*" --data-binary "*)
+		_want=\$(printf '%s' "ABC123\$(printf '%s' 'admin:Keenetic Test:secret' | md5sum | cut -d' ' -f1)" | sha256sum | cut -d' ' -f1)
+		[ "\$(cat | sed -n 's/.*"password":"\([0-9a-f]*\)".*/\1/p')" = "\$_want" ] && printf 200 || printf 401
+		exit 0 ;;
+esac
+printf 'HTTP/1.1 401 Unauthorized\r\nX-NDM-Realm: Keenetic Test\r\nX-NDM-Challenge: ABC123\r\n\r\n'
+EOF
+chmod +x "$T/kcurl"
+sed -i "s|exec sh|CURL=$T/kcurl exec sh|" "$R/share/shin4static/www/cgi-bin/s4s"
+printf 'WEB_AUTH=router\nWEB_USERS=admin\n' >> "$R/etc/shin4static/shin4static.conf"
+sh "$INIT" start > /dev/null 2>&1
+sleep 1
+check "no lighttpd auth in router mode" "! grep -q mod_auth '$R/etc/shin4static/lighttpd.conf'"
+COOKIE=
+http GET /
+check "page loads without basic auth" "[ \"\$(st)\" = 200 ]"
+http GET '/cgi-bin/s4s?a=get&name=vpn1.list'
+check "data needs login" "grep -qi '^x-s4s-result: auth' '$T/headers' && ! grep -q 5.6.7.8 '$T/body'"
+http POST '/cgi-bin/s4s?a=login' '' $'admin\nsecret'
+SID=$(sed -n 's/^[Ss]et-[Cc]ookie: s4s_session=\([0-9a-f]*\);.*/\1/p' "$T/headers" | tr -d '\r')
+check "login through lighttpd" "[ \${#SID} = 32 ]"
+COOKIE="s4s_session=$SID"
+http GET '/cgi-bin/s4s?a=get&name=vpn1.list'
+check "session works through lighttpd" "grep -q 5.6.7.8 '$T/body'"
+COOKIE=
 
 sh "$INIT" stop
 sleep 1
